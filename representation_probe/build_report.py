@@ -11,6 +11,9 @@ LABELS={'compartment_binary':'区室二分类','compartment_three':'区室三分
 SHORT={'dummy':'Dummy','simple_morphology':'简单形态基线','fusion50_point_11':'Point CLS11','fusion50_point_12':'Point CLS12',
  'fusion50_image_11':'EM CLS11','fusion50_image_12':'EM CLS12+LN','fusion50_balanced_pair_11':'Pair11','fusion50_balanced_pair_12':'Pair12',
  'fusion50_fused_11':'Fused11','fusion50_fused_12':'Fused12'}
+SHORT.update({'em_base_em_mean_l11_raw':'原始EM mean11','em_base_em_mean_l12_finalnorm':'原始EM mean12+LN',
+ 'fusion50_em_mean_l11_raw':'Fusion50 EM mean11','fusion50_em_cls_l6_raw':'Fusion50 EM CLS6',
+ 'fusion50_point_mean_l12_raw':'Fusion50 Point mean12','pointmae100_point_mean_l12_finalnorm':'MAE100 Point mean12+LN'})
 def fmt(x,d=3):
     if x is None or (isinstance(x,float) and not np.isfinite(x)):return '—'
     if isinstance(x,(float,np.floating)):return f'{x:.{d}f}'
@@ -67,7 +70,8 @@ def main(out):
             span('val','instances')+'/'+span('val','bodies'),f'{test_n}/{test_b}',len(folds)])
     pd.DataFrame(coverrows,columns=['task','train_instances_bodies','validation_instances_bodies','test_instances_bodies','folds']).to_csv(folder/'coverage.csv',index=False)
     selected=['dummy','simple_morphology','fusion50_point_11','fusion50_point_12','fusion50_image_11','fusion50_image_12',
-       'fusion50_balanced_pair_11','fusion50_balanced_pair_12','fusion50_fused_11','fusion50_fused_12']
+       'fusion50_balanced_pair_11','fusion50_balanced_pair_12','fusion50_fused_11','fusion50_fused_12','fusion50_point_mean_l12_raw',
+       'fusion50_em_mean_l11_raw','em_base_em_mean_l11_raw','pointmae100_point_mean_l12_finalnorm','fusion50_em_cls_l6_raw']
     classified={}
     for name in selected:
         for task in ['compartment_binary','celltype_six']:
@@ -88,7 +92,8 @@ def main(out):
        'fusion50_em_mean_l11_raw','fusion50_em_mean_l12_raw','fusion50_em_mean_l12_finalnorm','fusion50_em_cls_l12_raw']
     cnames=['pointmae100_point_mean_l12_raw','pointmae100_point_mean_l12_finalnorm','nna0_point_mean_l12_raw',
        'nna20_point_mean_l12_raw','fusion50_point_mean_l12_raw','nna0_point_cls_l12_raw','nna20_point_cls_l12_raw',
-       'fusion50_point_12','em_base_em_cls_l11_raw','fusion50_image_11','em_base_em_cls_l12_finalnorm','fusion50_image_12']
+       'fusion50_point_12','em_base_em_cls_l11_raw','fusion50_image_11','em_base_em_cls_l12_finalnorm','fusion50_image_12',
+       'em_base_em_mean_l11_raw','fusion50_em_mean_l11_raw','em_base_em_mean_l12_finalnorm','fusion50_em_mean_l12_finalnorm']
     geometries=pd.read_csv(out/'representation_geometry.csv')
     rankrows=[[SHORT.get(r.feature,r.feature),fmt(r.raw_effective_rank,2),fmt(r.top_pc_share)] for _,r in geometries.iterrows()
          if r.feature in ['fusion50_point_12','fusion50_image_11','fusion50_image_12','fusion50_fused_12']]
@@ -108,7 +113,18 @@ def main(out):
 
 {perf(selected)}
 
+部分冻结前端向量在不同阶段完全相同，保留它们用于身份/冻结控制，不将重复向量视作独立证据。未注明阶段的Point CLS、EM CLS、Pair、Fused行均来自Fusion50；原始EM和MAE100已单独标注。
+
 可直接观察：融合、单模态和拼接在不同任务上没有统一排序。表中的最高测试分数是探索性观察，不是使用测试集重新选择编码器、超参数或目标。差异强弱应结合下文配对区间，而非仅看小数点排序。
+
+本次最值得保留的观察：
+
+- Point局部group mean已能预测球形度，R²={fmt(score('fusion50_point_group_mean_pre_pe','sphericity'))}；到L11 mean为{fmt(score('fusion50_point_mean_l11_raw','sphericity'))}。Point加入PE的对应变化很小，不能把原始局部表示视为没有有用信息。
+- EM patch mean的ln(V) R²从pre-PE的{fmt(score('fusion50_em_patch_mean_pre_pe','volume_nm3'))}，到post-PE的{fmt(score('fusion50_em_input_mean_post_pe','volume_nm3'))}，再到L11 mean的{fmt(score('fusion50_em_mean_l11_raw','volume_nm3'))}。相当一部分尺度可读性在加入位置编码时已经出现。
+- EM CLS11→CLS12+LN在本次形态目标上未呈现普遍退化：球形度R² {fmt(score('fusion50_image_11','sphericity'))}→{fmt(score('fusion50_image_12','sphericity'))}，ln(伸长比) {fmt(score('fusion50_image_11','elongation'))}→{fmt(score('fusion50_image_12','elongation'))}。不能仅凭raw秩从约211降到约5认定这些信息消失；本实验也没有排除既有PE扰动敏感性。
+- 原始EM mean11的类型body BA为{fmt(score('em_base_em_mean_l11_raw','celltype_six'))}，Fusion50 EM mean11为{fmt(score('fusion50_em_mean_l11_raw','celltype_six'))}。固定input和pooling下的配对区间支持当前协议下的语义可读性下降；这不是单独L12一层造成的结论。
+- Fusion50 Point mean12与CLS12的类型body BA分别为{fmt(score('fusion50_point_mean_l12_raw','celltype_six'))}和{fmt(score('fusion50_point_12','celltype_six'))}。同一编码器、同维度改变readout就有较大差异；最终CLS分数不能概括全部普通tokens。
+- NNA0→NNA20的Point mean12球形度R²为{fmt(score('nna0_point_mean_l12_raw','sphericity'),6)}→{fmt(score('nna20_point_mean_l12_raw','sphericity'),6)}；CLS12的类型body BA为{fmt(score('nna0_point_cls_l12_raw','celltype_six'))}→{fmt(score('nna20_point_cls_l12_raw','celltype_six'))}。本次不支持明显的一致下游收益，不能据此推断NNA在所有目标上无效。
 
 ## 数据身份、标签和有效样本
 
@@ -123,6 +139,8 @@ def main(out):
 细胞类型来自cohort.metadata.cell_type，沿Point缓存、源实例metadata和neurons.csv传播；body元数据核对无矛盾。29种已命名标签加unlabeled中，仅保留既有6种具有足够body支持的类别，没有任意合并：
 
 {table(['类别','实例','独立body'],[[q['label'],q['instances'],q['bodies']] for q in typecounts])}
+
+注意预测单位：原始EM mean11的实例级BA为{fmt(score('em_base_em_mean_l11_raw','celltype_six','balanced_accuracy'))}、Macro-F1为{fmt(score('em_base_em_mean_l11_raw','celltype_six','macro_f1'))}；body聚合后BA为{fmt(score('em_base_em_mean_l11_raw','celltype_six'))}、Macro-F1为{fmt(score('em_base_em_mean_l11_raw','celltype_six','body_macro_f1'))}。body分数利用同一神经元的多个实例概率聚合，不能读成单个线粒体分类准确率。
 
 类型主任务覆盖4,462实例/67 body；其余稀有类别和unlabeled不纳入跨body分类主张。原104/13/13划分的类型类别不齐，因此使用按body分层的5折外层测试，每折在外层训练body内固定20%分组验证。训练按body实例数和类别body数加权；测试同时保存实例指标和body均值概率指标，防止大量线粒体的少数body主导结论。
 
@@ -183,6 +201,10 @@ NNA epoch0是实际保存的训练前checkpoint；其{controls['nna0_point_tenso
 {contrast('nna20_point_cls_l12_raw','fusion50_point_12','celltype_six')}
 
 {contrast('em_base_em_cls_l12_finalnorm','fusion50_image_12','sphericity')}
+
+{contrast('em_base_em_mean_l11_raw','fusion50_em_mean_l11_raw','celltype_six')}
+
+{contrast('em_base_em_mean_l12_finalnorm','fusion50_em_mean_l12_finalnorm','celltype_six')}
 
 ## 拼接、Fusion、低秩和尺度解释
 
