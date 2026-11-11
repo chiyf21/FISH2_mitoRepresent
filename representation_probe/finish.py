@@ -1,11 +1,11 @@
-"""Run disjoint feature shards with a four-thread CPU budget, then merge and verify."""
+"""Run disjoint feature shards with a bounded single-BLAS-thread CPU budget, then merge and verify."""
 import argparse,json,os,subprocess,sys,time
 from pathlib import Path
 import numpy as np
 import pandas as pd
 from common import *
 def main(out,workers):
-    out=Path(out);assert workers in [1,2]
+    out=Path(out);assert workers in [1,2,4]
     assert (out/'morphology.csv').exists()
     for stage in ['fusion50','pointmae100','nna0','nna20','em_base']:
         assert (out/'extraction'/stage/'complete.json').exists(),stage
@@ -23,7 +23,7 @@ def main(out,workers):
         names=[q['name'] for q in registry[w::workers]]
         phase=f'final_part{w}'
         cmd=[sys.executable,'-u',str(Path(__file__).parent/'evaluate.py'),'--output',str(out),'--phase',phase,'--features',','.join(names)]
-        env=os.environ.copy();env.update(OMP_NUM_THREADS='2',OPENBLAS_NUM_THREADS='2',MKL_NUM_THREADS='2',PYTHONDONTWRITEBYTECODE='1')
+        env=os.environ.copy();env.update(OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',MKL_NUM_THREADS='1',PYTHONDONTWRITEBYTECODE='1')
         log=(out/(phase+'.log')).open('a')
         p=subprocess.Popen(cmd,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT)
         jobs.append((p,log,phase))
@@ -64,7 +64,7 @@ def main(out,workers):
         wide.append(r)
     pd.DataFrame(wide).to_csv(folder/'performance.csv',index=False)
     save(folder/'complete.json',dict(features=len(registry)+2,results=len(d),elapsed_seconds=time.time()-started,workers=workers,
-         threads_per_worker=2,protocol_sha256=sha(out/'protocol.json'),evaluation_code_sha256=sha(Path(__file__).parent/'evaluate.py')))
+         threads_per_worker=1,protocol_sha256=sha(out/'protocol.json'),evaluation_code_sha256=sha(Path(__file__).parent/'evaluate.py')))
     for script in ['verify_results.py','diagnose.py','scale_control.py']:
         subprocess.run([sys.executable,str(Path(__file__).parent/script),'--output',str(out),'--phase','final'],check=True)
     save(out/'evaluation_complete.json',dict(completed_unix=time.time(),elapsed_seconds=time.time()-started))

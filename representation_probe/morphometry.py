@@ -66,10 +66,12 @@ def main(out,limit):
     result=pd.DataFrame([done[r['stable_key']] for r in rows])
     result.to_csv(out/('morphology_smoke.csv' if limit else 'morphology.csv'),index=False)
     numeric=['volume_nm3','surface_nm2','sphericity','elongation','surface_to_volume_nm_inv','mesh_to_voxel_volume']
-    qc=dict(count=len(result),ok=int(result.ok.sum()),errors=result.loc[~result.ok,['stable_key','error']].to_dict('records') if 'error' in result else [],
+    qc=dict(count=len(result),ok=int(result.ok.sum()),errors=[dict(stable_key=q['stable_key'],reason=q.get('error') or 'mesh edge-incidence check failed') for q in done.values() if not q['ok']],
       summary={c:dict(finite=int(np.isfinite(result[c]).sum()),min=float(result[c].min()),max=float(result[c].max()),median=float(result[c].median())) for c in numeric},
-      metadata_volume_mismatches=int((~result.metadata_volume_match.fillna(False)).sum()),
-      sphericity_above_one=int((result.sphericity>1).sum()),nonclosed=int((~result.mesh_closed.fillna(False)).sum()),
+      metadata_volume_mismatches=int((result.metadata_volume_match.dropna()==False).sum()),
+      missing_volume_checks=int(result.metadata_volume_match.isna().sum()),
+      sphericity_above_one=int((result.sphericity>1).sum()),nonclosed=int((result.mesh_closed.dropna()==False).sum()),
+      missing_mesh_checks=int(result.mesh_closed.isna().sum()),
       protocol=dict(spacing_zyx_nm=SPACING.tolist(),volume='occupied voxel count * 1920 nm^3',
         area='skimage Lewiner marching cubes level0.5 step1, no degenerate triangles, physical spacing, one exterior-zero voxel pad',
         elongation='sqrt(largest/smallest eigenvalue of occupied voxel-center physical covariance)',

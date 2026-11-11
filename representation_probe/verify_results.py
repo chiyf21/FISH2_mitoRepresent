@@ -12,6 +12,12 @@ def main(out,phase):
     assert sha(X/'checkpoints/refine_epoch050.pt')==audit['checkpoint_sha256']
     assert sha(X/'cohort.json')==registry[0]['input_cohort_sha256']
     feature_qc=[]
+    cp_hashes={q['checkpoint']:q.get('checkpoint_sha256') for q in registry}
+    for initial in json.loads((X/'initial_weights/manifest.json').read_text()):
+        path=str(X/initial['path'])
+        if path in cp_hashes and cp_hashes[path] is not None:assert cp_hashes[path]==initial['sha256']
+    target_table=pd.read_csv(out/'morphology.csv').set_index('stable_key') if (out/'morphology.csv').exists() else None
+    protocol=json.loads((out/'protocol.json').read_text())
     for q in registry:
         assert q['stable_key_order_sha256']==order
         a=np.load(q['path'],mmap_mode='r');assert a.shape==(10678,q['dimension']) and np.isfinite(a).all()
@@ -44,6 +50,10 @@ def main(out,phase):
             else:
                 assert abs(r2_score(y,pred)-q.r2)<1e-10
                 assert abs(mean_absolute_error(y,pred)-q.mae)<1e-10
+                source=df.set_index('stable_key')['volume_nm3'] if q.task=='volume_nm3' else target_table[q.task]
+                true=np.array([source[k] for k in keys],float)
+                if protocol['regression_targets'][q.task]=='ln':true=np.log(true)
+                assert np.allclose(y,true,rtol=1e-12,atol=1e-12),'regression target identity mismatch'
             tested+=1
     schema=json.loads((folder/'folds.json').read_text())
     for task in schema['tasks'].values():
@@ -56,9 +66,20 @@ def main(out,phase):
         valid=m[m.ok]
         assert valid.metadata_volume_match.all() and valid.mesh_closed.all()
         assert np.isfinite(valid[['volume_nm3','surface_nm2','sphericity','elongation','surface_to_volume_nm_inv']]).all().all()
+    replay={}
+    if phase=='final':
+        assert set(scores.feature)==set(q['name'] for q in registry)|{'dummy','simple_morphology'}
+        old=pd.read_csv(out/'phase1/scores_long.csv');merged=old.merge(scores,on=['feature','task'],suffixes=('_old','_new'))
+        assert len(merged)==len(old)
+        for metric in ['balanced_accuracy','body_balanced_accuracy','macro_f1','r2','mae','spearman']:
+            if metric+'_old' not in merged:continue
+            delta=(merged[metric+'_old']-merged[metric+'_new']).dropna()
+            maximum=float(delta.abs().max()) if len(delta) else 0.
+            assert maximum<1e-9,(metric,maximum)
+            replay[metric]=maximum
     result=dict(status='PASS',feature_count=len(registry),features=feature_qc,metric_records_recomputed=tested,
       cache_agreement=cache_agreement,task_subjects={k:len(v) for k,v in reference.items()},
-      body_leakage=False,stable_identity_verified=True,checkpoint_identity_verified=True)
+      body_leakage=False,stable_identity_verified=True,checkpoint_identity_verified=True,first_formal_phase_replay_max_abs=replay)
     save(folder/'verification.json',result);print(json.dumps({k:v for k,v in result.items() if k!='features'}))
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--output',required=True);p.add_argument('--phase',default='final');a=p.parse_args();main(a.output,a.phase)
