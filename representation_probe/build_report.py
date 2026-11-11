@@ -16,7 +16,9 @@ SHORT.update({'em_base_em_mean_l11_raw':'原始EM mean11','em_base_em_mean_l12_f
  'fusion50_point_mean_l12_raw':'Fusion50 Point mean12','pointmae100_point_mean_l12_finalnorm':'MAE100 Point mean12+LN'})
 def fmt(x,d=3):
     if x is None or (isinstance(x,float) and not np.isfinite(x)):return '—'
-    if isinstance(x,(float,np.floating)):return f'{x:.{d}f}'
+    if isinstance(x,(float,np.floating)):
+        if x!=0 and abs(x)<10**(-d):return f'{x:.2e}'
+        return f'{x:.{d}f}'
     return str(x)
 def table(headers,rows):
     def cell(x):return str(x).replace('|','/').replace('\n',' ')
@@ -78,13 +80,27 @@ def main(out):
             q=json.loads((folder/f'{name}__{task}.json').read_text())
             classified[name+'__'+task]={k:v for k,v in q['metrics'].items() if k in ['class_report','confusion','body_confusion','body_class_report']}
     save(folder/'selected_confusions_and_class_metrics.json',classified)
+    all_classes=[];all_matrices=[]
+    task_schema=json.loads((folder/'folds.json').read_text())['tasks']
+    for _,item in d[d.kind=='classification'].iterrows():
+        result=json.loads((folder/f'{item.feature}__{item.task}.json').read_text());metrics=result['metrics'];classes=task_schema[item.task]['classes']
+        for unit,report_key,matrix_key in [('instance','class_report','confusion'),('body','body_class_report','body_confusion')]:
+            if report_key not in metrics:continue
+            for c in classes:
+                entry=metrics[report_key][c];all_classes.append(dict(feature=item.feature,task=item.task,unit=unit,label=c,precision=entry['precision'],recall=entry['recall'],f1=entry['f1-score'],support=entry['support']))
+            all_matrices.append(dict(feature=item.feature,task=item.task,unit=unit,classes=classes,matrix=metrics[matrix_key]))
+    pd.DataFrame(all_classes).to_csv(folder/'classification_by_class.csv',index=False)
+    save(folder/'confusion_matrices.json',all_matrices)
     commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
     branch=subprocess.check_output(['git','branch','--show-current'],text=True).strip()
-    now=datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S %Z')
+    now=datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S %z')+'（北京时间）'
     stages=[]
-    for stage,g in pd.DataFrame(registry).groupby('stage',sort=False):
+    stage_frame=pd.DataFrame(registry);stage_frame['stage']=stage_frame['stage'].str.lower()
+    for stage in ['em_base','pointmae100','nna0','nna20','fusion50']:
+        g=stage_frame[stage_frame.stage==stage]
+        if g.empty:continue
         cps=g[['checkpoint','checkpoint_sha256']].drop_duplicates()
-        stages.append([stage,len(g),','.join(map(str,sorted(g.dimension.unique()))),
+        stages.append([{'em_base':'原始EM-MAE','pointmae100':'Point-MAE100','nna0':'NNA0','nna20':'NNA20','fusion50':'Fusion50'}[stage],len(g),','.join(map(str,sorted(g.dimension.unique()))),
           '; '.join(Path(p).name for p in cps.checkpoint),'; '.join(h[:12] for h in cps.checkpoint_sha256)])
     pnames=['fusion50_point_group_mean_pre_pe','fusion50_point_input_mean_post_pe','fusion50_point_mean_l6_raw',
        'fusion50_point_mean_l8_raw','fusion50_point_mean_l11_raw','fusion50_point_mean_l12_raw']
@@ -252,7 +268,7 @@ Point输入的二倍统一缩放测试在6个实际实例上得到完全相同�
 
 ## 复现、文件和代码
 
-[资产清单](feature_registry.csv)；[完整统一性能表](final/unified_performance.csv)；[简表](final/performance.csv)；[全部指标长表](final/scores_long.csv)；[任务覆盖](final/coverage.csv)；[配对差异及区间](final/paired_differences.csv)；[体积控制](final/scale_control.csv)；[选定逐类指标/混淆矩阵](final/selected_confusions_and_class_metrics.json)；[独立核验](final/verification.json)。
+[资产清单](feature_registry.csv)；[完整统一性能表](final/unified_performance.csv)；[简表](final/performance.csv)；[全部指标长表](final/scores_long.csv)；[任务覆盖](final/coverage.csv)；[配对差异及区间](final/paired_differences.csv)；[体积控制](final/scale_control.csv)；[全部逐类Precision/Recall/F1](final/classification_by_class.csv)；[全部混淆矩阵](final/confusion_matrices.json)；[独立核验](final/verification.json)。
 
 每个单项结果在final/表示名__任务名.json，包含验证选择轨迹、正则化参数和fold样本数；分类另含逐类Precision/Recall与混淆矩阵；predictions/下的NPZ保存测试稳定键、body、目标和预测。folds.json保存完整划分；protocol.json、asset_audit.json、各阶段extraction/manifest.json及feature_registry.json给出源码/配置/权重/特征hash。数据、权重、token、缓存和结果均不提交Git。
 
