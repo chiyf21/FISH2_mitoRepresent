@@ -54,11 +54,11 @@ def load(stage,device):
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
     point,grouping,image=m.load_models(device);model=m.System(point,image).to(device)
     cp=None
-    if stage in ['fusion50','nna20']:
-        cp=X/'checkpoints'/('refine_epoch050.pt' if stage=='fusion50' else 'pretrain_epoch020.pt')
+    if stage in ['fusion50','nna20','nna0']:
+        cp=X/'checkpoints'/('refine_epoch050.pt' if stage=='fusion50' else ('pretrain_epoch020.pt' if stage=='nna20' else 'pretrain_epoch000.pt'))
         ck=torch.load(cp,map_location='cpu',mmap=True,weights_only=False)
-        assert ck['epoch']==(50 if stage=='fusion50' else 20)
-        if stage=='nna20':model.point_nna=m.LegacyNNA().to(device)
+        assert ck['epoch']==(50 if stage=='fusion50' else (20 if stage=='nna20' else 0))
+        if stage in ['nna20','nna0']:model.point_nna=m.LegacyNNA().to(device)
         model.load_state_dict(ck['model'],strict=True)
         model.point_nna=None;del ck
     model.phase='refine' if stage=='fusion50' else 'pretrain'
@@ -66,7 +66,7 @@ def load(stage,device):
     return m,model,grouping,cp
 def batch(m,model,grouping,rows,points,device,stage,book):
     book.values={}
-    point_only=stage in ['nna20','pointmae100']
+    point_only=stage in ['nna20','nna0','pointmae100']
     capture=CaptureProjection(model.image)
     with capture:inp=m.prepare(rows,points,model.point,grouping,model.image,device,0,False,point_only=point_only)
     book.put('point_group_mean_pre_pe',inp[0].float().mean(1))
@@ -182,5 +182,5 @@ def main(out,stage,smoke,gpu):
     register(out,stage,paths,cp,manifest)
     save(dest/'complete.json',dict(instances=len(rows),arrays=len(paths),elapsed_seconds=time.time()-started,paths={k:str(p) for k,p in paths.items()}))
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--output',required=True);p.add_argument('--stage',choices=['fusion50','nna20','pointmae100','em_base'],required=True)
+    p=argparse.ArgumentParser();p.add_argument('--output',required=True);p.add_argument('--stage',choices=['fusion50','nna20','nna0','pointmae100','em_base'],required=True)
     p.add_argument('--smoke',action='store_true');p.add_argument('--gpu',default='GPU-3ae93c94-1c44-abc6-e01c-3e227609c329');a=p.parse_args();main(a.output,a.stage,a.smoke,a.gpu)

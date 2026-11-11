@@ -20,6 +20,7 @@ export CUDA_VISIBLE_DEVICES=GPU_UUID_YOU_CHECKED
 "$PY" representation_probe/extract.py --output "$OUT" --stage fusion50 --gpu "$CUDA_VISIBLE_DEVICES" --smoke
 "$PY" representation_probe/extract.py --output "$OUT" --stage fusion50 --gpu "$CUDA_VISIBLE_DEVICES"
 "$PY" representation_probe/extract.py --output "$OUT" --stage pointmae100 --gpu "$CUDA_VISIBLE_DEVICES"
+"$PY" representation_probe/extract.py --output "$OUT" --stage nna0 --gpu "$CUDA_VISIBLE_DEVICES"
 "$PY" representation_probe/extract.py --output "$OUT" --stage nna20 --gpu "$CUDA_VISIBLE_DEVICES"
 "$PY" representation_probe/extract.py --output "$OUT" --stage em_base --gpu "$CUDA_VISIBLE_DEVICES"
 "$PY" representation_probe/morphometry.py --output "$OUT"
@@ -39,3 +40,5 @@ Labels need caution: the dashboard compartments are graph/synapse-derived weak l
 The first float32 Ridge diagnostic and a stringent Logistic solver attempt are preserved only in the experiment directory. Formal probes use float64 and demand convergence. Hyperparameter candidates were retained; only solver numerical precision/budget changed, before the formal first table.
 
 All shared training code, dashboard assets, model files, masks and primary main worktree remain read-only. New output directories are required. Feature chunks and morphology records can resume inside their own directory after matching provenance; do not combine chunks from different configurations.
+
+The saved NNA epoch0 checkpoint supplies the actual initialized CLS control (nna0), with all 156 Point state tensors identical to Point-MAE100. Comparing nna0 with nna20 separates NNA training from adding CLS context. diagnose.py computes the predetermined body-bootstrap contrasts; verify_results.py recomputes actual held-out metrics; scale_control.py fits train-only log-volume controls. finish.py runs two disjoint feature shards with two BLAS threads each, merges identical protocols, and executes these checks.
