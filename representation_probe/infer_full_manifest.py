@@ -1,5 +1,5 @@
 """Infer Fusion50 L12 embeddings for the frozen 16,428-instance manifest."""
-import csv,json,time
+import argparse,csv,json,time
 from pathlib import Path
 import numpy as np,torch
 from scipy import ndimage as ndi
@@ -31,10 +31,22 @@ def save_json(path,value):
 def key(source,body,instance):return (str(source),str(body),int(instance))
 
 def main():
+    global SOURCE_MANIFEST, OUT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, default=SOURCE_MANIFEST)
+    parser.add_argument("--output", type=Path, default=OUT)
+    parser.add_argument("--sample-index-offset", type=int, default=0)
+    args = parser.parse_args()
+    frozen = args.manifest == SOURCE_MANIFEST
+    SOURCE_MANIFEST, OUT = args.manifest, args.output
+    if args.sample_index_offset < 0:
+        parser.error("--sample-index-offset must be nonnegative")
     if OUT.exists():raise FileExistsError(f"Refusing to overwrite existing run: {OUT}")
     OUT.mkdir(parents=True);chunks=OUT/"chunks";masks_out=OUT/"filled_masks";chunks.mkdir();masks_out.mkdir()
     with SOURCE_MANIFEST.open(newline="",encoding="utf-8-sig") as f:source_rows=list(csv.DictReader(f))
-    assert len(source_rows)==16428
+    if not source_rows or len({row["record_id"] for row in source_rows}) != len(source_rows):
+        raise ValueError("Input manifest must contain unique records")
+    if frozen: assert len(source_rows)==16428
     manifest_hash=sha(SOURCE_MANIFEST);old_rows=json.loads(OLD_COHORT.read_text())
     old_by_key={key(r["key"][0],r["key"][1],r["key"][2]):r for r in old_rows};assert len(old_by_key)==10678
     old_points=np.load(POINT_SOURCE,mmap_mode="r",allow_pickle=False);assert old_points.shape==(10678,2,2048,3)
@@ -58,7 +70,7 @@ def main():
             surface=filled&~ndi.binary_erosion(filled,structure=ndi.generate_binary_structure(3,1),border_value=0)
             zyx=np.argwhere(surface)
             if not len(zyx):raise ValueError(f"Empty 6-neighbor surface: {row['record_id']}")
-            xyz=zyx[:,::-1].astype(np.float32);rng=np.random.default_rng(SEED+index*2);radius=0.0
+            xyz=zyx[:,::-1].astype(np.float32);rng=np.random.default_rng(SEED+(args.sample_index_offset+index)*2);radius=0.0
             for view in range(2):
                 chosen=rng.choice(len(xyz),NPOINTS,replace=len(xyz)<NPOINTS)
                 sample=xyz[chosen].copy();sample-=sample.mean(axis=0,keepdims=True)
@@ -70,7 +82,7 @@ def main():
             save_json(OUT/"preprocess_progress.json",{"done":index+1,"total":len(source_rows),"old_matches":old_matches})
             print(json.dumps({"phase":"preprocess","done":index+1,"total":len(source_rows)}),flush=True)
     points.flush();del points,old_points
-    assert old_matches==10678 and len(inference_rows)==16428
+    if frozen: assert old_matches==10678 and len(inference_rows)==16428
     with (OUT/"instance_map.csv").open("w",newline="",encoding="utf-8") as f:
         w=csv.writer(f);w.writerow(["embedding_row","record_id","source_run_id","body_id","global_instance","cell_type","model_cohort_index","old_embedding_row"])
         for i,row in enumerate(source_rows):
@@ -79,7 +91,7 @@ def main():
     save_json(OUT/"input_manifest.json",{"instances":len(inference_rows),"old_cache_matches":old_matches,
         "new_instances":len(inference_rows)-old_matches,"source_manifest":str(SOURCE_MANIFEST),
         "source_manifest_sha256":manifest_hash,"pointclouds":str(point_path),
-        "point_sampling_new":"uniform 6-neighbor voxel surface; 2 deterministic views; replacement only below 2048 points",
+        "sample_index_offset":args.sample_index_offset,"point_sampling_new":"uniform 6-neighbor voxel surface; 2 deterministic views; replacement only below 2048 points",
         "mask_fill_new":"per native XY slice; 4-connected enclosed holes with area <200 px filled",
         "model_checkpoint":str(CHECKPOINT),"model_checkpoint_sha256":sha(CHECKPOINT),
         "old_pointclouds_reused_from":str(POINT_SOURCE),"inference_code_sha256":sha(Path(__file__))})
@@ -109,7 +121,8 @@ def main():
     all_embeddings=np.load(OUT/"fused_12.npy",mmap_mode="r",allow_pickle=False);old_cache=np.load(OLD_FUSED,mmap_mode="r",allow_pickle=False)
     assert old_cache.shape==(10678,384)
     deltas=np.asarray([all_embeddings[i]-old_cache[j] for i,j in enumerate(old_cache_rows) if j>=0],dtype=np.float64)
-    max_abs=float(np.max(np.abs(deltas)));relative_l2=float(np.linalg.norm(deltas)/max(np.linalg.norm(old_cache),1e-12))
+    max_abs=float(np.max(np.abs(deltas))) if len(deltas) else 0.0
+    relative_l2=float(np.linalg.norm(deltas)/max(np.linalg.norm(old_cache),1e-12)) if len(deltas) else 0.0
     assert max_abs<1e-4 and relative_l2<1e-6,(max_abs,relative_l2)
     save_json(OUT/"complete.json",{"status":"complete","instances":len(inference_rows),"dimension":384,
         "embedding":str(OUT/"fused_12.npy"),"instance_map":str(OUT/"instance_map.csv"),
