@@ -1,0 +1,34 @@
+{
+  "input": {
+    "kind": "cache",
+    "path": "/path/to/surface-cache",
+    "cohort": null
+  },
+  "output": "/path/to/point-run",
+  "point_mae_repo": "../vendor/point_mae",
+  "seed": 20261105,
+  "device": "cuda:0",
+  "amp": true,
+  "cpu_threads": 2,
+  "spacing_xyz_nm": [
+    8,
+    8,
+    30
+  ],
+  "normalization": "unit_sphere",
+  "split": {
+    "val_fraction": 0.1,
+    "test_fraction": 0.1
+  },
+  "mae": {
+    "epochs": 100,
+    "batch_size": 16,
+    "mask_ratio": 0.7,
+    "lr": 0.0005,
+    "weight_decay": 0.05,
+    "warmup_epochs": 10,
+    "grad_clip": 5,
+    "save_every": 10,
+    "jitter_std": 0
+  }
+}
