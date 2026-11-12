@@ -90,7 +90,8 @@ def main():
  if rank==0:
   write(out/'cohort.json',recs);write(out/'monitor_ids.json',probe);write(out/'status.json',dict(status='initializing',phase='pretrain',epoch=0))
  points=load_points(cfg,recs)
- point,grouping,image=load_models(cfg,device);model=core.System(point,image).to(device)
+ point,grouping,image=load_models(cfg,device)
+ model=core.System(point,image,normalize_image_cls_regularizer=cfg.get('normalize_image_cls_regularizer',False)).to(device)
  if rank==0:write(out/'initialization_check.json',dict(status='PASS',point='surface Point-MAE, strict full-model load',point_path=cfg['point_checkpoint'],image=cfg['image_checkpoint'],old_point_nna_weights_loaded=False))
  resume=torch.load(out/'last.pt',map_location='cpu',weights_only=False) if args.resume and (out/'last.pt').exists() else None
  if (out/'last.pt').exists() and not args.resume:raise FileExistsError('Existing run requires --resume')

@@ -101,8 +101,9 @@ class MLPFusion(nn.Module):
         return self.mlp(torch.cat((p,i),dim=-1))
 
 class System(nn.Module):
-    def __init__(self,point,image):
+    def __init__(self,point,image,normalize_image_cls_regularizer=False):
         super().__init__();self.point=point;self.image=image
+        self.normalize_image_cls_regularizer = normalize_image_cls_regularizer
         self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
         for m in [point,image]:m.requires_grad_(False)
         for block in point.blocks.blocks[-4:]:block.requires_grad_(True)
@@ -153,7 +154,11 @@ class System(nn.Module):
             value, terms=vicreg(fused[l])
             contrastive, extra=filtered_infonce(fused[l],ids,topk=20,temperature=0.2)
             point_reg, point_terms=cls_regularizer(p[l])
-            image_reg, image_terms=cls_regularizer(i[l])
+            image_cls = i[l]
+            if self.normalize_image_cls_regularizer and l != 12:
+                # Layer 12 already uses the image encoder's final LayerNorm.
+                image_cls = self.fusion.image_norm(image_cls)
+            image_reg, image_terms=cls_regularizer(image_cls)
             losses.append(value+contrastive+point_reg+image_reg)
             terms.update({'point_'+k:v for k,v in point_terms.items()})
             terms.update({'image_'+k:v for k,v in image_terms.items()})
