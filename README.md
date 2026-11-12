@@ -48,3 +48,22 @@ CUDA_VISIBLE_DEVICES=2 python fusion50/refine/export.py \
 ```
 
 Export creates `fused_12.npy` and `instance_map.csv` in the same row order. Input data, run outputs and weights stay outside the checkout. Load only trusted checkpoints. [Source provenance](SOURCE_MAP.md).
+
+## LC21 isotropic image pretraining
+
+Use `fusion50/image/lc21_128.json` for 8 nm isotropic EM. The input is
+128×128×128 voxels and each patch is 8×8×8 voxels. Prepare real image volumes
+from the candidate-coordinate CSV using the CloudVolume environment:
+
+```sh
+python fusion50/image/fetch_flyem_blocks.py --candidates /data/candidate_blocks_128.csv \
+  --holdout-manifest /data/lc21_instances.json --output "$RUN/blocks128" --workers 24
+
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 torchrun --standalone --nproc_per_node=6 \
+  fusion50/image/main_pretrain.py --config fusion50/image/lc21_128.json \
+  --data_path "$RUN/blocks128" --output_dir "$RUN/image128" --log_dir "$RUN/image128"
+```
+
+The optional holdout manifest excludes blocks linked to held-out bodies and blocks
+overlapping their instance bounding boxes. Downloads are resumable by rerunning
+the same command. The new patch projection requires fresh image pretraining.

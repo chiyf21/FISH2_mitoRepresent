@@ -1,0 +1,39 @@
+{
+  "batch_size": 16,
+  "patch_size": [
+    8,
+    8,
+    8
+  ],
+  "epochs": 60,
+  "accum_iter": 2,
+  "model": "focus3d_mae3d",
+  "input_size": [
+    128,
+    128,
+    128
+  ],
+  "mask_ratio": 0.5,
+  "norm_pix_loss": false,
+  "weight_decay": 0.05,
+  "lr": 0.002,
+  "blr": 0.001,
+  "min_lr": 0.0,
+  "warmup_epochs": 8,
+  "npy_axes": "xyz",
+  "seed": 0,
+  "num_workers": 4,
+  "pin_mem": true,
+  "embed_dim": 768,
+  "depth": 12,
+  "num_heads": 12,
+  "decoder_embed_dim": 384,
+  "decoder_depth": 8,
+  "decoder_num_heads": 12,
+  "in_chans": 1,
+  "mlp_ratio": 4.0,
+  "amp": true,
+  "augment": true,
+  "normalize": true,
+  "save_freq": 5
+}
