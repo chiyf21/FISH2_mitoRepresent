@@ -1,0 +1,4 @@
+-r image/requirements.txt
+kappamodules==0.1.112
+einops
+psutil
