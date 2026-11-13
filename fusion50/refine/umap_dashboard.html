@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlyEM · 线粒体形态</title>
+<style>
+:root{font:15px/1.5 Inter,"Segoe UI","Microsoft YaHei",sans-serif;color:#17243a;background:#f2f5f8}
+*{box-sizing:border-box}body{margin:0}main{max-width:1440px;margin:auto;padding:32px clamp(16px,4vw,56px)}
+h1{margin:0;font-size:clamp(26px,4vw,38px);letter-spacing:-.04em}header p{color:#50647a;margin:5px 0 22px}
+section,article{background:white;border:1px solid #dce4ed;border-radius:12px}
+.controls{padding:16px 19px;margin-bottom:16px}.fields{display:flex;flex-wrap:wrap;gap:12px 18px;align-items:end}
+label{display:grid;gap:4px;color:#43566e;font-size:13px;font-weight:600}
+select,button{font:inherit;color:#182a40;background:white;border:1px solid #c6d4e2;border-radius:6px;padding:7px 10px;max-width:100%}
+button{cursor:pointer}select:focus-visible,button:focus-visible{outline:2px solid #2571b0;outline-offset:2px}
+#desc,#counts{color:#52677e;font-size:13px;margin:10px 0 0}.scale{max-width:480px;margin-top:12px}
+#gradient{height:10px;border-radius:4px}.ticks{display:flex;justify-content:space-between;font-variant-numeric:tabular-nums;font-size:12px;color:#43566e}
+.plots{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}article{overflow:hidden;padding:14px}
+h2{font-size:16px;margin:0 4px 8px}canvas{width:100%;height:clamp(270px,36vw,490px);display:block;background:#fbfcfe;border:1px solid #e3eaf2;border-radius:7px;cursor:crosshair}
+#details{margin-top:15px;padding:12px 16px;min-height:49px;font-size:13px}
+small{display:block;margin-top:12px;color:#50647a} @media(max-width:760px){.plots{grid-template-columns:1fr}canvas{height:330px}}
+</style>
+</head>
+<body><main>
+<header><h1>FlyEM 线粒体形态</h1><p>6,400 个匹配实例 · 作者手工特征与 Fusion50 第 33 轮</p></header>
+<section class="controls" aria-label="着色设置">
+<div class="fields">
+<label>着色指标<select id="feature"></select></label>
+<label>Compartment<select id="compartment"><option value="">全部</option></select></label>
+<label>细胞类型<select id="cell_type"><option value="">全部</option></select></label>
+<label>色标范围<select id="range"><option value="robust">全体第 2–98 百分位</option><option value="full">全体最小–最大值</option></select></label>
+<button id="reset" type="button">重置</button>
+</div>
+<p id="desc"></p><div class="scale" aria-label="两图共用色标"><div id="gradient"></div><div class="ticks"><span id="low"></span><span id="mid"></span><span id="high"></span></div></div>
+<p id="counts" aria-live="polite"></p>
+</section>
+<div class="plots">
+<article><h2>作者手工特征 UMAP · 22 维</h2><canvas id="author" aria-label="作者手工特征 UMAP 散点图"></canvas></article>
+<article><h2>Fusion50 UMAP · 384 维</h2><canvas id="fusion" aria-label="Fusion50 UMAP 散点图"></canvas></article>
+</div>
+<section id="details" aria-live="polite">悬停查看线粒体数值与 ID，点击锁定两图中的同一实例。</section>
+<small>两图复用此前各自拟合的 UMAP 坐标。筛选只隐藏点，保留坐标和全体色标。悬停数值为作者特征原值。</small>
+</main>
+<script id="payload" type="application/json">__FLYEM_DATA__</script>
+<script>
+"use strict";
+const {features, rows} = JSON.parse(document.getElementById("payload").textContent);
+const byId = id => document.getElementById(id);
+const feature = byId("feature"), compartment = byId("compartment"), cell = byId("cell_type"), range = byId("range");
+const palette = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+const fmt = new Intl.NumberFormat("zh-CN",{maximumSignificantDigits:5});
+const colors = palette.map(rgb => "rgb("+rgb.join(",")+")");
+byId("gradient").style.background = "linear-gradient(to right,"+colors.join(",")+")";
+features.forEach(([label],i) => feature.add(new Option(label,i)));
+for (const [select,key] of [[compartment,2],[cell,3]]) {
+  [...new Set(rows.map(r => r[key]))].sort().forEach(value => select.add(new Option(value,value)));
+}
+const bounds = features.map((_,i) => {
+  const sorted = rows.map(r => r[8+i]).sort((a,b)=>a-b);
+  const q = p => sorted[Math.round(p*(sorted.length-1))];
+  return {robust:[q(.02),q(.98)],full:[q(0),q(1)]};
+});
+const plots = ["author","fusion"].map((id,j) => {
+  const x=4+j*2,y=x+1, xs=rows.map(r=>r[x]),ys=rows.map(r=>r[y]);
+  return {canvas:byId(id),x,y,loX:Math.min(...xs),hiX:Math.max(...xs),loY:Math.min(...ys),hiY:Math.max(...ys)};
+});
+let visible=[], active=null, locked=null, frame=0;
+function color(value,lo,hi) {
+  const t=Math.min(1,Math.max(0,(value-lo)/(hi-lo||1)))*(palette.length-1);
+  const i=Math.min(palette.length-2,Math.floor(t));
+  return "rgb("+palette[i].map((c,j)=>Math.round(c+(palette[i+1][j]-c)*(t-i))).join(",")+")";
+}
+function redraw() {
+  const f=Number(feature.value), [lo,hi]=bounds[f][range.value];
+  const current=locked??active;
+  for (const p of plots) {
+    const w=p.canvas.clientWidth,h=p.canvas.clientHeight,dpr=window.devicePixelRatio||1;
+    p.canvas.width=Math.round(w*dpr);p.canvas.height=Math.round(h*dpr);
+    const ctx=p.canvas.getContext("2d");ctx.scale(dpr,dpr);
+    const scale=Math.min((w-34)/(p.hiX-p.loX),(h-34)/(p.hiY-p.loY));
+    const mx=(p.hiX+p.loX)/2,my=(p.hiY+p.loY)/2;
+    p.screen=visible.map(r=>[w/2+(r[p.x]-mx)*scale,h/2-(r[p.y]-my)*scale,r]);
+    ctx.globalAlpha=.77;
+    for (const [x,y,r] of p.screen) {
+      ctx.fillStyle=color(r[8+f],lo,hi);ctx.beginPath();ctx.arc(x,y,2.05,0,2*Math.PI);ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    if(current) {
+      const x=w/2+(current[p.x]-mx)*scale,y=h/2-(current[p.y]-my)*scale;
+      ctx.beginPath();ctx.arc(x,y,5.5,0,2*Math.PI);ctx.lineWidth=3.5;ctx.strokeStyle="white";ctx.stroke();
+      ctx.lineWidth=1.6;ctx.strokeStyle="#17243a";ctx.stroke();
+    }
+  }
+  byId("details").textContent=current
+    ? [features[f][0]+" "+fmt.format(current[8+f]),current[2],current[3],"body_id "+current[0],"record_id "+current[1],locked?"已锁定 · 再点击或按 Esc 取消":""].filter(Boolean).join("  ·  ")
+    : "悬停查看线粒体数值与 ID，点击锁定两图中的同一实例。";
+}
+function queue(){if(!frame)frame=requestAnimationFrame(()=>{frame=0;redraw()});}
+function refresh(){
+  visible=rows.filter(r=>(!compartment.value||r[2]===compartment.value)&&(!cell.value||r[3]===cell.value));
+  if(locked&&!visible.includes(locked))locked=null;
+  active=null;
+  const f=Number(feature.value), [lo,hi]=bounds[f][range.value];
+  byId("desc").textContent=features[f][1];
+  byId("low").textContent=fmt.format(lo);
+  byId("mid").textContent=fmt.format((lo+hi)/2);
+  byId("high").textContent=fmt.format(hi);
+  byId("counts").textContent="显示 "+fmt.format(visible.length)+" / "+fmt.format(rows.length)+" 个实例";
+  queue();
+}
+function nearest(plot,event){
+  const box=plot.canvas.getBoundingClientRect();
+  let best=8**2,hit=null;
+  for(const [x,y,r] of plot.screen||[]){
+    const d=(event.clientX-box.left-x)**2+(event.clientY-box.top-y)**2;
+    if(d<best){best=d;hit=r;}
+  }
+  return hit;
+}
+for(const p of plots){
+  p.canvas.addEventListener("pointermove",e=>{if(!locked){const hit=nearest(p,e);if(hit!==active){active=hit;queue();}}});
+  p.canvas.addEventListener("pointerleave",()=>{if(!locked&&active){active=null;queue();}});
+  p.canvas.addEventListener("click",e=>{const hit=nearest(p,e);locked=hit===locked?null:hit;active=hit;queue();});
+}
+for(const input of [feature,compartment,cell,range]) input.addEventListener("change",refresh);
+byId("reset").onclick=()=>{feature.selectedIndex=compartment.selectedIndex=cell.selectedIndex=range.selectedIndex=0;locked=null;refresh();};
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){locked=active=null;queue();}});
+const resize=new ResizeObserver(queue);plots.forEach(p=>resize.observe(p.canvas));refresh();
+</script></body></html>
