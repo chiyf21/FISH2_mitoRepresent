@@ -9,10 +9,12 @@ from pathlib import Path
 import numpy as np
 from scipy.ndimage import binary_dilation, find_objects
 
+from em_texture import METRICS as TEXTURE_METRICS, texture
+
 
 METRICS = (
     "em_mean", "em_std", "em_shell_mean", "em_shell_minus_inside",
-    "em_neighbor_abs_diff",
+    "em_neighbor_abs_diff", *TEXTURE_METRICS,
 )
 
 
@@ -41,7 +43,7 @@ def measure(row):
               shell.mean() - inside.mean(), total / pairs)
     if not np.isfinite(values).all():
         raise ValueError(f"Nonfinite EM feature for {row['record_id']}")
-    return [str(row["body_id"]), str(row["record_id"]), *values]
+    return [str(row["body_id"]), str(row["record_id"]), *values, *texture(image, foreground)]
 
 
 def main():

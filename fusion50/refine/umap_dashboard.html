@@ -60,16 +60,17 @@ for (const [prefix, title] of [["", "形态指标"], ["EM", "图像指标"]]) {
   if (group.children.length) feature.append(group);
 }
 const gyration = features.findIndex(([label]) => label.startsWith("回转半径"));
-const defaultFeature = Math.max(0, gyration);
-const defaultRange = gyration >= 0 ? "lowTail" : "robust";
+const texture = features.findIndex(([label]) => label === "EM 内部纹理方向性");
+const defaultFeature = texture >= 0 ? texture : Math.max(0, gyration);
+const defaultRange = defaultFeature === gyration ? "lowTail" : "robust";
 feature.value = String(defaultFeature);
 range.value = defaultRange;
 for (const [select,key] of [[compartment,2],[cell,3]]) {
   [...new Set(rows.map(r => r[key]))].sort().forEach(value => select.add(new Option(value,value)));
 }
 const bounds = features.map((_,i) => {
-  const sorted = rows.map(r => r[8+i]).sort((a,b)=>a-b);
-  const q = p => sorted[Math.round(p*(sorted.length-1))];
+  const sorted = rows.map(r => r[8+i]).filter(Number.isFinite).sort((a,b)=>a-b);
+  const q = p => sorted[Math.round(p*(sorted.length-1))] ?? p;
   return {lowTail:[q(.02),q(.25)],robust:[q(.02),q(.98)],full:[q(0),q(1)]};
 });
 const plots = ["author","fusion"].map((id,j) => {
@@ -94,7 +95,7 @@ function redraw() {
     p.screen=visible.map(r=>[w/2+(r[p.x]-mx)*scale,h/2-(r[p.y]-my)*scale,r]);
     ctx.globalAlpha=.77;
     for (const [x,y,r] of p.screen) {
-      ctx.fillStyle=color(r[8+f],lo,hi);ctx.beginPath();ctx.arc(x,y,2.05,0,2*Math.PI);ctx.fill();
+      ctx.fillStyle=r[8+f] === null ? "#aab2bd" : color(r[8+f],lo,hi);ctx.beginPath();ctx.arc(x,y,2.05,0,2*Math.PI);ctx.fill();
     }
     ctx.globalAlpha=1;
     if(current) {
@@ -104,7 +105,7 @@ function redraw() {
     }
   }
   byId("details").textContent=current
-    ? [features[f][0]+" "+fmt.format(current[8+f]),current[2],current[3],"body_id "+current[0],"record_id "+current[1],locked?"已锁定 · 再点击或按 Esc 取消":""].filter(Boolean).join("  ·  ")
+    ? [features[f][0]+" "+(current[8+f] === null ? "未测得" : fmt.format(current[8+f])),current[2],current[3],"body_id "+current[0],"record_id "+current[1],locked?"已锁定 · 再点击或按 Esc 取消":""].filter(Boolean).join("  ·  ")
     : "悬停查看线粒体数值与 ID，点击锁定两图中的同一实例。";
 }
 function queue(){if(!frame)frame=requestAnimationFrame(()=>{frame=0;redraw()});}
@@ -119,6 +120,8 @@ function refresh(){
   byId("mid").textContent=fmt.format((lo+hi)/2);
   byId("high").textContent=fmt.format(hi);
   byId("counts").textContent="显示 "+fmt.format(visible.length)+" / "+fmt.format(rows.length)+" 个实例";
+  const missing = visible.filter(r => r[8+f] === null).length;
+  if (missing) byId("counts").textContent += " · 灰点 " + fmt.format(missing) + " 个未测得";
   queue();
 }
 function nearest(plot,event){

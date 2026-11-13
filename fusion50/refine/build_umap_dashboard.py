@@ -25,6 +25,10 @@ EM_FEATURES = {
     "em_shell_minus_inside": ("EM 内外灰度对比", "外部壳层均值减去内部均值。正值表示线粒体内部更暗。"),
     "em_neighbor_abs_diff": ("EM 内部相邻灰度差", "mask 内相邻体素绝对灰度差的均值，反映局部纹理起伏。"),
 }
+TEXTURE = {
+    "em_texture_directionality": ("EM 内部纹理方向性", "越接近 1，灰度梯度越集中在一个方向。只使用远离 mask 边缘的体素。"),
+    "em_texture_fine_fraction": ("EM 细尺度纹理比例", "细尺度灰度起伏能量占两档能量的比例。越大表示细尺度起伏占比越高。"),
+}
 KEYS = ("body_id", "record_id")
 LABELS = ("compartment", "cell_type")
 COORDINATES = ("author22_x", "author22_y", "fused_x", "fused_y")
@@ -56,7 +60,9 @@ def main():
     if em is not None and em.keys() != features.keys():
         raise ValueError("Expected identical EM and morphology instance keys")
     metrics = FEATURES if em is None else {**FEATURES, **EM_FEATURES}
-    metrics = {"gyration": GYRATION, **metrics}
+    texture = {k: v for k, v in TEXTURE.items()
+               if em is not None and k in next(iter(em.values()))}
+    metrics = {"gyration": GYRATION, **metrics, **texture}
     rows = []
     for key, source in features.items():
         target = coordinates[key]
@@ -72,6 +78,9 @@ def main():
             values.extend(float(em[key][column]) for column in EM_FEATURES)
         if not all(map(math.isfinite, values)):
             raise ValueError(f"Nonfinite value for {key}")
+        for column in texture:
+            value = float(em[key][column])
+            values.append(value if math.isfinite(value) else None)
         rows.append([*key, *labels, *values])
     payload = json.dumps({"features": list(metrics.values()), "rows": rows},
                          ensure_ascii=False, allow_nan=False, separators=(",", ":"))
