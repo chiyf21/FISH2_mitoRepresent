@@ -28,7 +28,7 @@ small{display:block;margin-top:12px;color:#50647a} @media(max-width:760px){.plot
 <label>着色指标<select id="feature"></select></label>
 <label>Compartment<select id="compartment"><option value="">全部</option></select></label>
 <label>细胞类型<select id="cell_type"><option value="">全部</option></select></label>
-<label>色标范围<select id="range"><option value="robust">全体第 2–98 百分位</option><option value="full">全体最小–最大值</option></select></label>
+<label>色标范围<select id="range"><option value="lowTail">全体第 2–25 百分位</option><option value="robust">全体第 2–98 百分位</option><option value="full">全体最小–最大值</option></select></label>
 <button id="reset" type="button">重置</button>
 </div>
 <p id="desc"></p><div class="scale" aria-label="两图共用色标"><div id="gradient"></div><div class="ticks"><span id="low"></span><span id="mid"></span><span id="high"></span></div></div>
@@ -59,15 +59,18 @@ for (const [prefix, title] of [["", "形态指标"], ["EM", "图像指标"]]) {
   });
   if (group.children.length) feature.append(group);
 }
-const contrast = features.findIndex(([label]) => label === "EM 内外灰度对比");
-if (contrast >= 0) feature.value = String(contrast);
+const gyration = features.findIndex(([label]) => label.startsWith("回转半径"));
+const defaultFeature = Math.max(0, gyration);
+const defaultRange = gyration >= 0 ? "lowTail" : "robust";
+feature.value = String(defaultFeature);
+range.value = defaultRange;
 for (const [select,key] of [[compartment,2],[cell,3]]) {
   [...new Set(rows.map(r => r[key]))].sort().forEach(value => select.add(new Option(value,value)));
 }
 const bounds = features.map((_,i) => {
   const sorted = rows.map(r => r[8+i]).sort((a,b)=>a-b);
   const q = p => sorted[Math.round(p*(sorted.length-1))];
-  return {robust:[q(.02),q(.98)],full:[q(0),q(1)]};
+  return {lowTail:[q(.02),q(.25)],robust:[q(.02),q(.98)],full:[q(0),q(1)]};
 });
 const plots = ["author","fusion"].map((id,j) => {
   const x=4+j*2,y=x+1, xs=rows.map(r=>r[x]),ys=rows.map(r=>r[y]);
@@ -110,7 +113,8 @@ function refresh(){
   if(locked&&!visible.includes(locked))locked=null;
   active=null;
   const f=Number(feature.value), [lo,hi]=bounds[f][range.value];
-  byId("desc").textContent=features[f][1];
+  byId("desc").textContent = features[f][1] + (range.value === "lowTail"
+    ? " 色标放大低值区，范围外的点使用两端颜色。" : "");
   byId("low").textContent=fmt.format(lo);
   byId("mid").textContent=fmt.format((lo+hi)/2);
   byId("high").textContent=fmt.format(hi);
@@ -131,8 +135,12 @@ for(const p of plots){
   p.canvas.addEventListener("pointerleave",()=>{if(!locked&&active){active=null;queue();}});
   p.canvas.addEventListener("click",e=>{const hit=nearest(p,e);locked=hit===locked?null:hit;active=hit;queue();});
 }
-for(const input of [feature,compartment,cell,range]) input.addEventListener("change",refresh);
-byId("reset").onclick=()=>{feature.selectedIndex=Math.max(contrast,0);compartment.selectedIndex=cell.selectedIndex=range.selectedIndex=0;locked=null;refresh();};
+feature.addEventListener("change", () => {
+  range.value = Number(feature.value) === gyration ? "lowTail" : "robust";
+  refresh();
+});
+for(const input of [compartment,cell,range]) input.addEventListener("change",refresh);
+byId("reset").onclick=()=>{feature.value=String(defaultFeature);range.value=defaultRange;compartment.selectedIndex=cell.selectedIndex=0;locked=null;refresh();};
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){locked=active=null;queue();}});
 const resize=new ResizeObserver(queue);plots.forEach(p=>resize.observe(p.canvas));refresh();
 </script></body></html>

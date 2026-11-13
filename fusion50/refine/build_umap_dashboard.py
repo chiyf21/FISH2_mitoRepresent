@@ -6,6 +6,8 @@ import math
 from pathlib import Path
 
 
+GYRATION = ("回转半径（PC2/PC3 轴平均）",
+            "由作者的 PC2、PC3 惯性矩与体积计算，单位为体素。值越小，体素越集中。")
 FEATURES = {
     "size": ("体积", "作者发布的线粒体体积，单位为体素。"),
     "mito SA": ("表面积", "作者的线粒体表面积估计，单位为体素平方。"),
@@ -54,6 +56,7 @@ def main():
     if em is not None and em.keys() != features.keys():
         raise ValueError("Expected identical EM and morphology instance keys")
     metrics = FEATURES if em is None else {**FEATURES, **EM_FEATURES}
+    metrics = {"gyration": GYRATION, **metrics}
     rows = []
     for key, source in features.items():
         target = coordinates[key]
@@ -61,6 +64,9 @@ def main():
         if any(source[label] != target[label] for label in LABELS):
             raise ValueError(f"Annotation mismatch for {key}")
         values = [float(target[column]) for column in COORDINATES]
+        volume = float(source["size"])
+        inertia = float(source["PC2 inertia moment"]) + float(source["PC3 inertia moment"])
+        values.append(math.sqrt(inertia / (2 * volume)))
         values.extend(float(source[column]) for column in FEATURES)
         if em is not None:
             values.extend(float(em[key][column]) for column in EM_FEATURES)
