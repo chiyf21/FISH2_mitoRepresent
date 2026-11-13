@@ -25,13 +25,90 @@ AUTHOR_URL = "https://github.com/ClarkLabCode/MitochondrialMorphologyPosition"
 NOTEBOOK = "morphology classifier - LC neurons.ipynb"
 
 
-def score(y, prediction):
-    cm = confusion_matrix(y, prediction, labels=[0, 1, 2])
+def score(y, prediction, classes=CLASSES):
+    labels = list(range(len(classes)))
+    cm = confusion_matrix(y, prediction, labels=labels)
     return dict(balanced_accuracy=float(balanced_accuracy_score(y, prediction)),
-                macro_f1=float(f1_score(y, prediction, labels=[0, 1, 2], average="macro", zero_division=0)),
-                recall=dict(zip(CLASSES, recall_score(y, prediction, labels=[0, 1, 2], average=None, zero_division=0).tolist())),
+                macro_f1=float(f1_score(y, prediction, labels=labels, average="macro", zero_division=0)),
+                recall=dict(zip(classes, recall_score(y, prediction, labels=labels, average=None, zero_division=0).tolist())),
                 confusion=cm.tolist(),
-                confusion_normalized=np.divide(cm, cm.sum(1, keepdims=True), out=np.zeros((3, 3)), where=cm.sum(1, keepdims=True) > 0).tolist())
+                confusion_normalized=np.divide(cm, cm.sum(1, keepdims=True), out=np.zeros_like(cm, dtype=float), where=cm.sum(1, keepdims=True) > 0).tolist())
+
+
+def run_oof_rf(x, y, df, mode, workers, classes, condition):
+    training = []
+    probability = np.full((len(df), len(classes)), np.nan)
+    seen = np.zeros(len(df), dtype=int)
+    for fold in range(5):
+        scopes = sorted(df.cell_type.unique()) if mode == "A_by_type" else ["all"]
+        for scope in scopes:
+            domain = df.cell_type.eq(scope).to_numpy() if scope != "all" else np.ones(len(df), dtype=bool)
+            train = np.flatnonzero((df.fold.to_numpy() != fold) & domain)
+            test = np.flatnonzero((df.fold.to_numpy() == fold) & domain)
+            assert len(train) and len(test)
+            assert not set(df.body_id.iloc[train]) & set(df.body_id.iloc[test])
+            if scope != "all":
+                assert set(df.cell_type.iloc[train]) == {scope} and set(df.cell_type.iloc[test]) == {scope}
+            counts = np.bincount(y[train], minlength=len(classes))
+            weights = 1.0 / counts[y[train]]
+            totals = np.bincount(y[train], weights=weights, minlength=len(classes))
+            np.testing.assert_allclose(totals[counts > 0], 1.0)
+            model = RandomForestClassifier(n_estimators=100, min_weight_fraction_leaf=.01,
+                random_state=SEED + fold, n_jobs=workers, class_weight=None, max_features="sqrt")
+            model.fit(x[train], y[train], sample_weight=weights)
+            probability[np.ix_(test, model.classes_.astype(int))] = model.predict_proba(x[test])
+            missing = np.setdiff1d(list(range(len(classes))), model.classes_)
+            if len(missing):
+                probability[np.ix_(test, missing)] = 0.0
+            seen[test] += 1
+            training.append(dict(condition=condition, fold=fold, scope=scope, train_instances=len(train), test_instances=len(test),
+                                 train_bodies=df.body_id.iloc[train].nunique(), test_bodies=df.body_id.iloc[test].nunique(),
+                                 class_counts=counts.tolist(), missing_classes=[classes[i] for i in missing],
+                                 test_class_counts=np.bincount(y[test], minlength=len(classes)).tolist(),
+                                 missing_test_classes=[classes[i] for i in range(len(classes)) if not np.any(y[test] == i)]))
+    assert np.all(seen == 1) and np.isfinite(probability).all()
+    np.testing.assert_allclose(probability.sum(1), 1.0)
+    return probability, training
+
+
+def aggregate_probabilities(df, groups, probability):
+    group_predictions, literal_predictions, all_inf, zeros = [], [], 0, int((probability == 0).sum())
+    for _, group in groups.iterrows():
+        mask = df.body_id.eq(group.body_id).to_numpy() & df.compartment.eq(group.compartment).to_numpy()
+        p = probability[mask]
+        log_mean = np.log10(np.clip(p, EPS, 1)).mean(0)
+        with np.errstate(divide="ignore"):
+            raw_mean = np.log10(p).mean(0)
+        all_inf += int(np.isneginf(raw_mean).all())
+        group_predictions.append(int(log_mean.argmax()))
+        literal_predictions.append(int(raw_mean.argmax()))
+    prediction = np.array(group_predictions)
+    return prediction, np.array(literal_predictions), all_inf, zeros
+
+
+def plot_four_conditions(results, classes, title, path, by_type_label="LC type"):
+    """Identical figure style for binary and three-class oracle aggregation."""
+    with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11}):
+        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+        fig.subplots_adjust(left=.15, right=.98, bottom=.10, top=.83, wspace=.5, hspace=.58)
+        ticks = list(range(len(classes)))
+        labels = [c.replace("connecting cable", "connecting\ncable") for c in classes]
+        for ax, (name, result) in zip(axes.flat, results.items()):
+            cm, norm = np.array(result["confusion"]), np.array(result["confusion_normalized"])
+            ax.imshow(norm, cmap="Blues", vmin=0, vmax=1)
+            for i in ticks:
+                for j in ticks:
+                    ax.text(j, i, f"{cm[i,j]}\n{norm[i,j]:.1%}", ha="center", va="center",
+                            color="white" if norm[i,j] > .55 else "black", fontsize=12)
+            ax.set_xticks(ticks, labels)
+            ax.set_yticks(ticks, labels)
+            ax.set_xlabel("Predicted compartment")
+            ax.set_ylabel("True compartment")
+            label = name.replace("A_by_type", "A: By " + by_type_label).replace("B_pooled", "B: Pooled").replace("_handcrafted", " / Handcrafted 22D").replace("_embedding", " / Embedding 384D")
+            ax.set_title(label + f"\nBA={result['balanced_accuracy']:.3f}; Macro-F1={result['macro_f1']:.3f}", fontsize=11)
+        fig.suptitle(title, fontsize=15, y=.97)
+        fig.savefig(path, dpi=220, facecolor="white")
+        plt.close(fig)
 
 
 def main():
@@ -115,53 +192,14 @@ def main():
     for mode in ["A_by_type", "B_pooled"]:
         for feature, x in xs.items():
             name = mode + "_" + feature
-            probability = np.full((len(df), 3), np.nan)
-            seen = np.zeros(len(df), dtype=int)
-            for fold in range(5):
-                scopes = sorted(df.cell_type.unique()) if mode == "A_by_type" else ["all"]
-                for scope in scopes:
-                    domain = df.cell_type.eq(scope).to_numpy() if scope != "all" else np.ones(len(df), dtype=bool)
-                    train = np.flatnonzero((df.fold.to_numpy() != fold) & domain)
-                    test = np.flatnonzero((df.fold.to_numpy() == fold) & domain)
-                    assert len(train) and len(test)
-                    assert not set(df.body_id.iloc[train]) & set(df.body_id.iloc[test])
-                    if scope != "all":
-                        assert set(df.cell_type.iloc[train]) == {scope} and set(df.cell_type.iloc[test]) == {scope}
-                    counts = np.bincount(y[train], minlength=3)
-                    weights = 1.0 / counts[y[train]]
-                    totals = np.bincount(y[train], weights=weights, minlength=3)
-                    np.testing.assert_allclose(totals[counts > 0], 1.0)
-                    model = RandomForestClassifier(n_estimators=100, min_weight_fraction_leaf=.01,
-                        random_state=SEED + fold, n_jobs=args.workers, class_weight=None, max_features="sqrt")
-                    model.fit(x[train], y[train], sample_weight=weights)
-                    probability[np.ix_(test, model.classes_.astype(int))] = model.predict_proba(x[test])
-                    missing = np.setdiff1d([0, 1, 2], model.classes_)
-                    if len(missing):
-                        probability[np.ix_(test, missing)] = 0.0
-                    seen[test] += 1
-                    training.append(dict(condition=name, fold=fold, scope=scope, train_instances=len(train), test_instances=len(test),
-                                         train_bodies=df.body_id.iloc[train].nunique(), test_bodies=df.body_id.iloc[test].nunique(),
-                                         class_counts=counts.tolist(), missing_classes=[CLASSES[i] for i in missing],
-                                         test_class_counts=np.bincount(y[test], minlength=3).tolist(),
-                                         missing_test_classes=[CLASSES[i] for i in range(3) if not np.any(y[test] == i)]))
-            assert np.all(seen == 1) and np.isfinite(probability).all()
-            np.testing.assert_allclose(probability.sum(1), 1.0)
+            probability, fitted = run_oof_rf(x, y, df, mode, args.workers, CLASSES, name)
+            training.extend(fitted)
             instances = manifest.copy()
             for k, label in enumerate(CLASSES):
                 instances["p_" + label.replace(" ", "_")] = probability[:, k]
             instances["prediction"] = probability.argmax(1)
             instances.to_csv(out / (name + "_instance_oof.csv"), index=False)
-            group_predictions, literal_predictions, all_inf, zeros = [], [], 0, int((probability == 0).sum())
-            for _, group in groups.iterrows():
-                mask = df.body_id.eq(group.body_id).to_numpy() & df.compartment.eq(group.compartment).to_numpy()
-                p = probability[mask]
-                log_mean = np.log10(np.clip(p, EPS, 1)).mean(0)
-                with np.errstate(divide="ignore"):
-                    raw_mean = np.log10(p).mean(0)
-                all_inf += int(np.isneginf(raw_mean).all())
-                group_predictions.append(int(log_mean.argmax()))
-                literal_predictions.append(int(raw_mean.argmax()))
-            prediction = np.array(group_predictions)
+            prediction, literal_predictions, all_inf, zeros = aggregate_probabilities(df, groups, probability)
             paired[name + "_prediction"] = [CLASSES[k] for k in prediction]
             paired[name + "_correct"] = prediction == groups.label.to_numpy()
             paired[name + "_unclipped_prediction"] = [CLASSES[k] for k in literal_predictions]
@@ -194,25 +232,9 @@ def main():
     rows = [dict(condition=name, balanced_accuracy=v["balanced_accuracy"], macro_f1=v["macro_f1"],
                  **{"recall_" + k.replace(" ", "_"): r for k, r in v["recall"].items()}) for name, v in results.items()]
     pd.DataFrame(rows).to_csv(out / "summary.csv", index=False)
-    with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11}):
-        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
-        fig.subplots_adjust(left=.15, right=.98, bottom=.10, top=.83, wspace=.5, hspace=.58)
-        for ax, (name, result) in zip(axes.flat, results.items()):
-            cm, norm = np.array(result["confusion"]), np.array(result["confusion_normalized"])
-            ax.imshow(norm, cmap="Blues", vmin=0, vmax=1)
-            for i in range(3):
-                for j in range(3):
-                    ax.text(j, i, f"{cm[i,j]}\n{norm[i,j]:.1%}", ha="center", va="center",
-                            color="white" if norm[i,j] > .55 else "black", fontsize=12)
-            ax.set_xticks([0, 1, 2], ["axon", "dendrite", "connecting\ncable"])
-            ax.set_yticks([0, 1, 2], ["axon", "dendrite", "connecting\ncable"])
-            ax.set_xlabel("Predicted compartment")
-            ax.set_ylabel("True compartment")
-            label = name.replace("A_by_type", "A: By LC type").replace("B_pooled", "B: Pooled").replace("_handcrafted", " / Handcrafted 22D").replace("_embedding", " / Embedding 384D")
-            ax.set_title(label + f"\nBA={result['balanced_accuracy']:.3f}; Macro-F1={result['macro_f1']:.3f}", fontsize=11)
-        fig.suptitle("FlyEM | 5-fold body OOF | oracle compartment grouping\n6400 mitochondria | 96 bodies | 212 groups", fontsize=15, y=.97)
-        fig.savefig(out / "four_conditions_confusion.png", dpi=220, facecolor="white")
-        plt.close(fig)
+    plot_four_conditions(results, CLASSES,
+        "FlyEM | 5-fold body OOF | oracle compartment grouping\n6400 mitochondria | 96 bodies | 212 groups",
+        out / "four_conditions_confusion.png")
     lines = ["# FlyEM Figure 2C 风格三分类聚合", "", "| 训练方式 | Handcrafted 22D：BA / Macro-F1 | Embedding 384D：BA / Macro-F1 |", "|---|---|---|"]
     for mode, title in [("A_by_type", "A：按LC类型分别训练"), ("B_pooled", "B：混合类型训练")]:
         h, e = results[mode + "_handcrafted"], results[mode + "_embedding"]
