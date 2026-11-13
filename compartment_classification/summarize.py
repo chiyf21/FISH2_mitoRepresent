@@ -25,7 +25,7 @@ def body_matrices(frame, bodies):
     matrices = []
     for body in bodies:
         subset = frame.loc[frame.body_id.eq(body)]
-        cm = np.zeros((2, 2), dtype=int)
+        cm = np.zeros((len(CLASSES), len(CLASSES)), dtype=int)
         np.add.at(cm, (subset.label.to_numpy(dtype=int), subset.prediction.to_numpy(dtype=int)), 1)
         matrices.append(cm)
     return np.stack(matrices)

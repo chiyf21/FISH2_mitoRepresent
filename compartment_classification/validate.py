@@ -46,10 +46,14 @@ def main():
                 for name, split in [(f"fold_{i}", s) for i, s in enumerate(splits["outer"])] + [("holdout", splits["holdout"])]:
                     train, test = split["train"], split["test"]
                     assert not set(groups[train]) & set(groups[test])
+                    assert set(y[train]) == set(range(len(protocol.CLASSES)))
+                    assert set(y[test]) == set(range(len(protocol.CLASSES)))
                     assert len(split["inner"]) == 3
                     for inner in split["inner"]:
                         assert not set(groups[inner["train"]]) & set(groups[inner["test"]])
                         assert set(inner["train"]) | set(inner["test"]) == set(train)
+                        assert set(y[inner["train"]]) == set(range(len(protocol.CLASSES)))
+                        assert set(y[inner["test"]]) == set(range(len(protocol.CLASSES)))
                         assert not (set(inner["train"]) | set(inner["test"])) & set(splits["holdout"]["test"])
                     folder = data / feature / classifier / name
                     estimator = joblib.load(folder / "model.joblib")
