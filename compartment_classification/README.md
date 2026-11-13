@@ -75,3 +75,14 @@ original smoke and retain the previous provenance. The exclusive GPU guard can
 pause/resume the owned exporter when another process enters its card; it never
 signals another user's process. Successful final validation also checks that a
 recorded pre-migration prefix hash is preserved.
+
+Package the completed, validated experiment with:
+
+```sh
+python compartment_classification/package.py --output "$OUT"
+```
+
+The private result bundle contains reports, split/identity manifests, individual
+held-out predictions, runtime commands/provenance and logs. It excludes source
+EM/masks, feature arrays, embedding arrays, model weights and fitted classifiers;
+those remain in their server output locations. Code is tracked separately in Git.
