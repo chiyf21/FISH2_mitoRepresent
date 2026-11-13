@@ -75,6 +75,13 @@ def main():
         assert config["epoch"] == 33 and "refine_both_cls_ln/checkpoints/refine_epoch033.pt" in config["checkpoint"]
         assert complete["reference_smoke_max_abs_delta"] == 0
         assert complete["fused_12_sha256"] == sha(export / "fused_12.npy")
+        resume_record = args.output / "export_resume_request.json"
+        if resume_record.exists():
+            import hashlib
+            request = json.loads(resume_record.read_text())
+            vectors = np.load(export / "fused_12.npy", mmap_mode="r", allow_pickle=False)
+            assert np.isfinite(vectors).all() and vectors.shape == (9731, 384)
+            assert hashlib.sha256(vectors[:request["resume_from"]].tobytes()).hexdigest() == request["prefix_sha256"]
         mapping = table(export / "instance_map.csv")
         assert mapping.record_id.is_unique and mapping.embedding_row.tolist() == list(range(9731))
         model_run = Path(config["config"]["point_run"]).parent

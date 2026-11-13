@@ -52,3 +52,26 @@ cross-dataset score differences. A body-disjoint downstream test also does not
 prove that the entire frozen encoder never encountered its bodies: historical
 image-pretraining exposure remains a limitation. Fish2 review-source provenance
 is incomplete. Scores apply to single mitochondria, not neurite-segment aggregation.
+
+After all three feature jobs finish for both datasets:
+
+```sh
+python compartment_classification/validate.py --output "$OUT"
+python compartment_classification/summarize.py --output "$OUT" --bootstrap 5000
+```
+
+The report separates retained holdout results from development OOF results, gives
+per-class precision/recall, per-fold metrics, count/row-normalized confusion
+matrices, and 5,000 paired body cluster bootstrap intervals. Bootstrap uncertainty
+is conditional on the fixed fitted models and does not include retraining or
+label uncertainty. Per-body balanced accuracy averages only classes present in
+that body; pooled balanced accuracy remains the main reported metric.
+
+For resource interruptions, stop only the owned exporter. The exporter supports
+`--resume` on the same output after verifying the flushed batch boundary, fixed
+checkpoint/config, point input manifest and inference source hashes. It does not
+resample the cohort or change seeds. Compare the resumed full export with the
+original smoke and retain the previous provenance. The exclusive GPU guard can
+pause/resume the owned exporter when another process enters its card; it never
+signals another user's process. Successful final validation also checks that a
+recorded pre-migration prefix hash is preserved.

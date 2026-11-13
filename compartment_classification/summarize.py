@@ -174,6 +174,15 @@ def main():
     for row in paired:
         if row["evaluation"] == "holdout":
             lines.append(f"- {row['dataset']} / {row['classifier']}: ΔBA={row['delta_balanced_accuracy']:+.4f} [{row['ba_ci_low']:+.4f}, {row['ba_ci_high']:+.4f}]；ΔMacro-F1={row['delta_macro_f1']:+.4f} [{row['f1_ci_low']:+.4f}, {row['f1_ci_high']:+.4f}]；body等权平均ΔBA={row['mean_body_delta_ba']:+.4f}。")
+    lines += ["", "## 外测每类Precision / Recall", "", "| 数据集 | 特征 | 分类器 | axon P/R | dendrite P/R |", "|---|---|---|---|---|"]
+    for row in summary:
+        if row["evaluation"] == "holdout" and row["feature"] != "dummy":
+            lines.append(f"| {row['dataset']} | {row['feature']} | {row['classifier']} | {row['precision_axon']:.4f} / {row['recall_axon']:.4f} | {row['precision_dendrite']:.4f} / {row['recall_dendrite']:.4f} |")
+    lines += ["", "## 当前证据支持的结论", ""]
+    for row in paired:
+        if row["evaluation"] == "holdout":
+            verdict = "该外测中embedding的BA优势区间为正" if row["ba_ci_low"] > 0 else ("该外测中手工特征的BA优势区间为正" if row["ba_ci_high"] < 0 else "该外测未能确认两种特征有稳定BA差异")
+            lines.append(f"- {row['dataset']} / {row['classifier']}：{verdict}；这是当前body样本与固定模型下的条件证据。")
     lines += ["", "## Dummy", ""]
     for row in summary:
         if row["feature"] == "dummy" and row["evaluation"] == "holdout":
@@ -196,6 +205,17 @@ def main():
         "- ../flyem_embeddings/{fused_12.npy,instance_map.csv,provenance.json,complete.json}：正式向量及固定checkpoint身份。",
         "",
     ]
+    lines += ["", "## 固定资产和版本", ""]
+    for dataset in args.datasets:
+        prov = all_results[dataset]["data"]
+        lines.append(f"- {dataset} checkpoint: "+str(prov["checkpoint"]))
+        for path, info in prov["source_files"].items():
+            lines.append(f"  - {path}；SHA256={info['sha256']}")
+    export_record = args.output / "flyem_embeddings/complete.json"
+    if export_record.exists():
+        details = json.loads(export_record.read_text())
+        lines.append("- FlyEM full export: "+json.dumps(details, ensure_ascii=False))
+        lines.append("- 导出期间发现其他进程进入同卡后暂停自身推理，随后恢复到独占空闲卡；恢复保留了已验证前缀，完整来源历史和进程记录保留在输出目录。")
     for dataset in args.datasets:
         lines += [f"## {dataset} 混淆矩阵", "", f"![{dataset} independent holdout]({dataset}_holdout_confusion.png)", ""]
     (dest / "report_zh.md").write_text("\n".join(lines))
