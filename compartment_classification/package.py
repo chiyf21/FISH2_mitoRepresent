@@ -53,6 +53,7 @@ def main():
         files += [root / sub / "instance_map.csv"]
     files = sorted({p for p in files if p.is_file()})
     dump(report / "artifact_hashes.json", {str(p.relative_to(root)): sha(p) for p in files if p.name != "artifact_hashes.json"})
+    files = sorted(set(files + [report / "artifact_hashes.json"]))
     archive = root / "results_bundle.zip"
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as z:
         for p in files:
