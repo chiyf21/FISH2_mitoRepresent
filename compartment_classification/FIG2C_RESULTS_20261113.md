@@ -18,6 +18,8 @@
 
 **协议：**原五折只覆盖85个development bodies，另11个为holdout；本次为覆盖全部96个body，按LC类型分层生成四组共享的固定五折（seed=20261113）。A的每个模型只使用对应LC的训练body；B使用其余折全部LC的训练body。六类LC各9–18个body，70个RF模型均没有缺失训练类别，全部实例恰有一次OOF预测。
 
+测试类别覆盖：LC4 fold0、LC6 fold1、LC22 fold3（fold从0编号）的测试body在exact子集中只有axon，没有dendrite/connecting cable组；未跳过这些body或fold，也未补造区室组。70个模型的训练集均包含三类，最终四组仍共享全部212个实际存在的区室组。
+
 RF固定100树、min_weight_fraction_leaf=0.01、训练区室样本数倒数权重；无内层调参或新holdout。聚合为组内平均log10概率后argmax，使用1e-15防止log(0)；四组与未截断原式的预测差异均为0。RF直接输入特征，不使用原notebook的全样本zscore。
 
 **解释边界：**组由body_id＋真实compartment定义，属于oracle grouping，不代表自动发现未知区室。参考notebook保存的运行覆盖21种LC，本次仅6类的exact-center子集；样本覆盖、固定折与随机种子不同，不能当作严格同数据复现。手工22维包含神经元骨架长度和PCA几何信息。本OOF隔离的是RF训练body，冻结embedding的历史预训练暴露未重新控制；结论限于本次固定划分和聚合协议。

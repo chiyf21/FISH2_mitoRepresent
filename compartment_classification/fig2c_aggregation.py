@@ -141,7 +141,9 @@ def main():
                     seen[test] += 1
                     training.append(dict(condition=name, fold=fold, scope=scope, train_instances=len(train), test_instances=len(test),
                                          train_bodies=df.body_id.iloc[train].nunique(), test_bodies=df.body_id.iloc[test].nunique(),
-                                         class_counts=counts.tolist(), missing_classes=[CLASSES[i] for i in missing]))
+                                         class_counts=counts.tolist(), missing_classes=[CLASSES[i] for i in missing],
+                                         test_class_counts=np.bincount(y[test], minlength=3).tolist(),
+                                         missing_test_classes=[CLASSES[i] for i in range(3) if not np.any(y[test] == i)]))
             assert np.all(seen == 1) and np.isfinite(probability).all()
             np.testing.assert_allclose(probability.sum(1), 1.0)
             instances = manifest.copy()
