@@ -27,6 +27,21 @@ def main():
         assert provenance["instance_manifest_sha256"] == sha(data / "instances.csv")
         assert provenance["splits_sha256"] == sha(data / "splits.json")
         assert manifest.record_id.is_unique
+        if "binary_splits_sha256" in provenance:
+            sources = provenance["source_files"]
+            old_manifest_path = next(Path(p) for p in sources if p.endswith("/flyem/instances.csv"))
+            old_split_path = next(Path(p) for p in sources if p.endswith("/flyem/splits.json"))
+            old_manifest = table(old_manifest_path)
+            old_splits = json.loads(old_split_path.read_text())
+            assert sha(old_split_path) == provenance["binary_splits_sha256"]
+            def same_bodies(old_split, new_split):
+                for part in ["train", "test"]:
+                    assert set(old_manifest.iloc[old_split[part]].body_id) == set(groups[new_split[part]])
+                for old_inner, new_inner in zip(old_split.get("inner", []), new_split.get("inner", [])):
+                    same_bodies(old_inner, new_inner)
+            same_bodies(old_splits["holdout"], splits["holdout"])
+            for old_fold, new_fold in zip(old_splits["outer"], splits["outer"]):
+                same_bodies(old_fold, new_fold)
         held_bodies = set(groups[splits["holdout"]["test"]])
         dev_bodies = set(groups[splits["holdout"]["train"]])
         assert not held_bodies & dev_bodies

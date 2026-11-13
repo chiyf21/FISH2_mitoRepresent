@@ -78,6 +78,8 @@ def main():
             draws_scores = previous.scores(draws)
             lo, hi = previous.interval(draws_scores)
             precision, recall, f1 = class_scores(total)
+            np.testing.assert_allclose(precision, [point["precision"][c] for c in CLASSES])
+            np.testing.assert_allclose(recall, [point["recall"][c] for c in CLASSES])
             cprec, crec, cf1 = class_scores(draws)
             row = dict(feature=feature, classifier=classifier, evaluation=evaluation, instances=len(subset), bodies=len(bodies),
                        balanced_accuracy=point["balanced_accuracy"], macro_f1=point["macro_f1"],
