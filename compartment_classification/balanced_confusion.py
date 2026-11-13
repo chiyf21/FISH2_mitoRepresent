@@ -116,7 +116,7 @@ def fly_balanced(base, manifest):
     return x, pd.DataFrame(rows), files, checkpoint
 
 
-def plot(results, dataset, classes, n, bodies, ngroups, path):
+def plot(results, dataset, classes, n, bodies, ngroups, path, classifier="RF"):
     with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11}):
         fig, axes = plt.subplots(2, 2, figsize=(12, 12))
         fig.subplots_adjust(left=.145, right=.975, bottom=.105, top=.82,
@@ -146,7 +146,7 @@ def plot(results, dataset, classes, n, bodies, ngroups, path):
                     f"{dataset} | {task}\n{fname} | n={count:,}\n"
                     f"BA={result['balanced_accuracy']:.3f} | Macro-F1={result['macro_f1']:.3f}",
                     fontsize=11, pad=13)
-        fig.suptitle(f"{dataset} | RF by neuron type | 5-fold body OOF\n"
+        fig.suptitle(f"{dataset} | {classifier} by neuron type | 5-fold body OOF\n"
                      f"n={n:,} mitochondria | bodies={bodies} | groups={ngroups}",
                      fontsize=16, y=.97)
         fig.text(.5, .035, "Count + true-class normalized % | "
