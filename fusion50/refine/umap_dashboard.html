@@ -39,7 +39,7 @@ small{display:block;margin-top:12px;color:#50647a} @media(max-width:760px){.plot
 <article><h2>Fusion50 UMAP · 384 维</h2><canvas id="fusion" aria-label="Fusion50 UMAP 散点图"></canvas></article>
 </div>
 <section id="details" aria-live="polite">悬停查看线粒体数值与 ID，点击锁定两图中的同一实例。</section>
-<small>两图复用此前各自拟合的 UMAP 坐标。筛选只隐藏点，保留坐标和全体色标。悬停数值为作者特征原值。</small>
+<small>两图复用此前各自拟合的 UMAP 坐标。筛选只隐藏点，保留坐标和全体色标。悬停显示指标原值。形态指标来自作者数据，EM 指标从对应实例裁块计算。</small>
 </main>
 <script id="payload" type="application/json">__FLYEM_DATA__</script>
 <script>
@@ -51,7 +51,16 @@ const palette = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
 const fmt = new Intl.NumberFormat("zh-CN",{maximumSignificantDigits:5});
 const colors = palette.map(rgb => "rgb("+rgb.join(",")+")");
 byId("gradient").style.background = "linear-gradient(to right,"+colors.join(",")+")";
-features.forEach(([label],i) => feature.add(new Option(label,i)));
+for (const [prefix, title] of [["", "形态指标"], ["EM", "图像指标"]]) {
+  const group = document.createElement("optgroup");
+  group.label = title;
+  features.forEach(([label], i) => {
+    if (label.startsWith("EM") === Boolean(prefix)) group.append(new Option(label, i));
+  });
+  if (group.children.length) feature.append(group);
+}
+const contrast = features.findIndex(([label]) => label === "EM 内外灰度对比");
+if (contrast >= 0) feature.value = String(contrast);
 for (const [select,key] of [[compartment,2],[cell,3]]) {
   [...new Set(rows.map(r => r[key]))].sort().forEach(value => select.add(new Option(value,value)));
 }
@@ -123,7 +132,7 @@ for(const p of plots){
   p.canvas.addEventListener("click",e=>{const hit=nearest(p,e);locked=hit===locked?null:hit;active=hit;queue();});
 }
 for(const input of [feature,compartment,cell,range]) input.addEventListener("change",refresh);
-byId("reset").onclick=()=>{feature.selectedIndex=compartment.selectedIndex=cell.selectedIndex=range.selectedIndex=0;locked=null;refresh();};
+byId("reset").onclick=()=>{feature.selectedIndex=Math.max(contrast,0);compartment.selectedIndex=cell.selectedIndex=range.selectedIndex=0;locked=null;refresh();};
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){locked=active=null;queue();}});
 const resize=new ResizeObserver(queue);plots.forEach(p=>resize.observe(p.canvas));refresh();
 </script></body></html>
