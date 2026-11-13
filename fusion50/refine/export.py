@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--verify-repeat", action="store_true")
     parser.add_argument("--reference-smoke", type=Path)
     parser.add_argument("--expected-epoch", type=int)
+    parser.add_argument("--resume", action="store_true", help="Resume only a validated flushed prefix in this output")
     args = parser.parse_args()
     if args.batch_size < 1:
         parser.error("--batch-size must be positive")
@@ -66,8 +67,29 @@ def main():
     epoch, step = checkpoint["epoch"], checkpoint["step"]
     del checkpoint
     model.phase = "refine"
-    args.output.mkdir(parents=True, exist_ok=False)
-    started = time.time()
+    previous = None
+    resume_from = 0
+    if args.resume:
+        if (args.output / "complete.json").exists():
+            raise FileExistsError("This export is already complete")
+        previous = json.loads((args.output / "provenance.json").read_text())
+        progress = json.loads((args.output / "progress.json").read_text())
+        resume_from = int(progress["done"])
+        if not (0 < resume_from < len(rows)) or resume_from % args.batch_size:
+            raise ValueError("Resume must start at a flushed canonical batch boundary")
+        for field, expected in [("checkpoint_sha256", sha(args.checkpoint)), ("config", config),
+                                ("export_size", len(rows)), ("batch_size", args.batch_size),
+                                ("point_input_manifest_sha256", sha(Path(config["point_run"]) / "data/instances.json"))]:
+            if previous[field] != expected:
+                raise ValueError(f"Resume identity mismatch: {field}")
+        for name in ["train.py", "code/core.py", "code/base.py"]:
+            if previous["source_sha256"][name] != sha(Path(__file__).parent / name):
+                raise ValueError(f"Inference implementation changed: {name}")
+        if args.indices or previous["selected_cohort_indices"] is not None:
+            raise ValueError("Resume supports the full canonical cohort only")
+    else:
+        args.output.mkdir(parents=True, exist_ok=False)
+    started = previous["started_unix"] if previous else time.time()
     provenance = dict(
         checkpoint=str(args.checkpoint.resolve()), checkpoint_sha256=sha(args.checkpoint),
         epoch=epoch, step=step, config=config, config_sha256=sha(args.config),
@@ -80,9 +102,21 @@ def main():
         batch_size=args.batch_size, dtype="float32", representation="canonical single-view L12 fused_12",
         started_unix=started,
     )
+    if previous:
+        provenance["resumptions"] = previous.get("resumptions", []) + [dict(
+            resume_from=resume_from, time=time.time(), previous_code_commit=previous["code_commit"],
+            previous_export_source_sha256=previous["source_sha256"]["export.py"],
+            previous_cuda_visible_devices=previous["cuda_visible_devices"],
+            cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"))]
+        backup = args.output / f"provenance_before_resume_{len(provenance['resumptions'])}.json"
+        if backup.exists():
+            raise FileExistsError(backup)
+        write(backup, previous)
     write(args.output / "provenance.json", provenance)
     temporary = args.output / "fused_12.partial.npy"
-    result = np.lib.format.open_memmap(temporary, mode="w+", dtype="float32", shape=(len(rows), 384))
+    result = np.lib.format.open_memmap(temporary, mode="r+" if args.resume else "w+", dtype="float32", shape=(len(rows), 384))
+    if result.shape != (len(rows), 384) or (resume_from and not np.isfinite(result[:resume_from]).all()):
+        raise ValueError("Invalid previously flushed prefix")
     repeat_max = 0.0
 
     def forward(batch):
@@ -92,7 +126,7 @@ def main():
         return fused[12][:, 0].float().cpu().numpy()
 
     with torch.inference_mode():
-        for start in range(0, len(rows), args.batch_size):
+        for start in range(resume_from, len(rows), args.batch_size):
             batch = rows[start:start + args.batch_size]
             vectors = forward(batch)
             if vectors.shape != (len(batch), 384) or not np.isfinite(vectors).all():
@@ -138,7 +172,7 @@ def main():
         reference_smoke_max_abs_delta=reference_delta,
         fused_12_sha256=sha(args.output / "fused_12.npy"),
         instance_map_sha256=sha(args.output / "instance_map.csv"),
-        elapsed_seconds=time.time() - started, finished_unix=time.time(),
+        elapsed_seconds=time.time() - started, finished_unix=time.time(), resumed_from=resume_from,
     ))
 
 
