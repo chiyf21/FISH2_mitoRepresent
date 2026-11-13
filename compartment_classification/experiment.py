@@ -60,7 +60,7 @@ def split_groups(indices, y, groups, n, seed):
     for a, b in cv.split(np.zeros(len(indices)), y[indices], groups[indices]):
         train, test = indices[a], indices[b]
         assert not set(groups[train]) & set(groups[test]), "Body leakage"
-        assert set(y[train]) == {0, 1} and set(y[test]) == {0, 1}, "Missing class in split"
+        assert set(y[train]) == set(range(len(CLASSES))) and set(y[test]) == set(range(len(CLASSES))), "Missing class in split"
         result.append(dict(train=train.tolist(), test=test.tolist()))
     assert sorted(i for s in result for i in s["test"]) == sorted(indices.tolist())
     return result
@@ -174,12 +174,12 @@ def prepare(args):
 
 
 def metrics(y, p):
-    cm = confusion_matrix(y, p, labels=[0, 1])
-    prec, rec, f1, support = precision_recall_fscore_support(y, p, labels=[0, 1], zero_division=0)
-    return dict(balanced_accuracy=float(balanced_accuracy_score(y, p)), macro_f1=float(f1_score(y, p, labels=[0, 1], average="macro", zero_division=0)),
+    cm = confusion_matrix(y, p, labels=list(range(len(CLASSES))))
+    prec, rec, f1, support = precision_recall_fscore_support(y, p, labels=list(range(len(CLASSES))), zero_division=0)
+    return dict(balanced_accuracy=float(balanced_accuracy_score(y, p)), macro_f1=float(f1_score(y, p, labels=list(range(len(CLASSES))), average="macro", zero_division=0)),
                 precision=dict(zip(CLASSES, prec.tolist())), recall=dict(zip(CLASSES, rec.tolist())),
                 support=dict(zip(CLASSES, support.tolist())), confusion=cm.tolist(),
-                confusion_normalized=np.divide(cm, cm.sum(1, keepdims=True), out=np.zeros((2, 2)), where=cm.sum(1, keepdims=True) != 0).tolist())
+                confusion_normalized=np.divide(cm, cm.sum(1, keepdims=True), out=np.zeros_like(cm, dtype=float), where=cm.sum(1, keepdims=True) != 0).tolist())
 
 
 def candidates(kind):
@@ -230,7 +230,7 @@ def run_split(x, y, groups, split, kind, workers, seed, folder):
         estimator.fit(x[split["train"]], y[split["train"]])
     prediction = estimator.predict(x[split["test"]])
     probability = estimator.predict_proba(x[split["test"]])
-    assert estimator.classes_.tolist() == [0, 1]
+    assert estimator.classes_.tolist() == list(range(len(CLASSES)))
     score = metrics(y[split["test"]], prediction)
     result = dict(parameters=params, selected_inner_balanced_accuracy=traces[best]["validation_balanced_accuracy"],
                   metrics=score, train_instances=len(split["train"]), test_instances=len(split["test"]),
@@ -243,7 +243,9 @@ def run_split(x, y, groups, split, kind, workers, seed, folder):
 
 
 def fit(args):
+    global CLASSES
     data = args.output / args.dataset
+    CLASSES = json.loads((data / "data_provenance.json").read_text())["classes"]
     manifest = table(data / "instances.csv")
     splits = json.loads((data / "splits.json").read_text())
     y = manifest.label.to_numpy(dtype=int)
@@ -261,7 +263,7 @@ def fit(args):
         dump(out / "fit_provenance.json", dict(
             identity=identity, python=platform.python_version(), numpy=np.__version__, sklearn=sklearn.__version__,
             script_sha256=sha(__file__), code_commit=subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip(),
-            workers=args.workers, seed=SEED, started_unix=time.time(), commands=os.sys.argv,
+            workers=args.workers, seed=SEED, classes=CLASSES, started_unix=time.time(), commands=os.sys.argv,
             logistic="StandardScaler fitted inside each training split; balanced L2 logistic, float64",
             random_forest="300 trees; balanced_subsample; no standardization; inner group CV selects leaf/max_features",
             grids={k: candidates(k) for k in ["logistic", "random_forest"]} ))
@@ -276,13 +278,17 @@ def fit(args):
             result, p, prob = run_split(x, y, groups, split, kind, args.workers, SEED + i, kdir / f"fold_{i}")
             folds.append(result)
             f = manifest.iloc[split["test"]].copy()
-            f["prediction"], f["p_axon"], f["p_dendrite"], f["evaluation"] = p, prob[:, 0], prob[:, 1], "development_oof"
+            f["prediction"], f["evaluation"] = p, "development_oof"
+            for column, label in enumerate(CLASSES):
+                f["p_" + label.replace(" ", "_")] = prob[:, column]
             predictions.append(f)
             emit(stage="outer_fold_complete", dataset=args.dataset, feature=args.feature, classifier=kind,
                  fold=i, parameters=result["parameters"], metrics=result["metrics"])
         result, p, prob = run_split(x, y, groups, splits["holdout"], kind, args.workers, SEED + 999, kdir / "holdout")
         f = manifest.iloc[splits["holdout"]["test"]].copy()
-        f["prediction"], f["p_axon"], f["p_dendrite"], f["evaluation"] = p, prob[:, 0], prob[:, 1], "holdout"
+        f["prediction"], f["evaluation"] = p, "holdout"
+        for column, label in enumerate(CLASSES):
+            f["p_" + label.replace(" ", "_")] = prob[:, column]
         predictions.append(f)
         allp = pd.concat(predictions).sort_values("record_id")
         assert len(allp) == len(manifest) and allp.record_id.is_unique

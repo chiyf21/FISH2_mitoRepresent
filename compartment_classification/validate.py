@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import joblib
+import experiment as protocol
 import numpy as np
 
 from experiment import dump, metrics, sha, table
@@ -22,6 +23,7 @@ def main():
         groups = manifest.body_id.to_numpy(dtype=str)
         splits = json.loads((data / "splits.json").read_text())
         provenance = json.loads((data / "data_provenance.json").read_text())
+        protocol.CLASSES = provenance["classes"]
         assert provenance["instance_manifest_sha256"] == sha(data / "instances.csv")
         assert provenance["splits_sha256"] == sha(data / "splits.json")
         assert manifest.record_id.is_unique
@@ -69,7 +71,8 @@ def main():
                     assert result["parameters"] == max(result["tuning"], key=lambda v: v["validation_balanced_accuracy"])["parameters"]
                     checks.append(dict(dataset=dataset, feature=feature, classifier=classifier, split=name, status="PASS"))
     if "flyem" in args.datasets:
-        export = args.output / "flyem_embeddings"
+        fly_provenance = json.loads((args.output / "flyem/data_provenance.json").read_text())
+        export = Path(fly_provenance.get("embedding_directory", str(args.output / "flyem_embeddings")))
         complete = json.loads((export / "complete.json").read_text())
         config = json.loads((export / "provenance.json").read_text())
         assert config["epoch"] == 33 and "refine_both_cls_ln/checkpoints/refine_epoch033.pt" in config["checkpoint"]
