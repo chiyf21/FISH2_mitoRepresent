@@ -24,7 +24,8 @@ TASKS = {
                       scope="pooled", group=["body_id"], n=5568, groups=81),
 }
 FORBIDDEN = {"record_id", "body_id", "cell_type", "compartment", "compartment_qc",
-             "source_run_id", "global_instance", "fold", "label", "embedding_row"}
+             "source_run_id", "global_instance", "fold", "label", "embedding_row",
+             "neuron_id", "neuron_type", "celltype", "instance_id", "author_row_id", "compartment_label"}
 
 
 def dump(path, obj):

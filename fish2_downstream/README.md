@@ -98,3 +98,5 @@ spec的`cwd`和`argv`必须是该模型对应的真实代码，支持`{checkpoin
 
 测试：`python -m unittest fish2_downstream.test_controls -v`。
 历史回归：`python -m fish2_downstream.verify_reference --rf-run /ABS/completed_rf_run --lr-run /ABS/completed_lr_run`。
+
+已完成的逐项回归验证见 [VALIDATION.md](VALIDATION.md)。

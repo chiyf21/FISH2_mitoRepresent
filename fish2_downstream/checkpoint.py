@@ -31,6 +31,15 @@ def checkpoint_job(args):
         raise ValueError("Exporter argv must be a string list; shell commands are not accepted")
     if not any("{checkpoint}" in value for value in spec["argv"]):
         raise ValueError("The exporter must explicitly receive {checkpoint}")
+    for field in ["matrix", "instance_map", "representation", "dimension"]:
+        if field not in spec:
+            raise ValueError("Exporter spec is missing " + field)
+    for field in ["matrix", "instance_map"]:
+        relative = Path(spec[field])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Exporter output paths must stay inside its new output directory")
+    if int(spec["dimension"]) < 1 or not any("{export_dir}" in value for value in spec["argv"]):
+        raise ValueError("Exporter needs a positive dimension and explicit {export_dir}")
     cwd = Path(spec["cwd"]).resolve()
     if not cwd.is_dir():
         raise FileNotFoundError(cwd)
