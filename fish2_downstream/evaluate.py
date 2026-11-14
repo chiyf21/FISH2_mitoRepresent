@@ -28,8 +28,8 @@ def evaluate(x, frame, config, classifier, workers):
     probability = np.full((len(frame), len(classes)), np.nan)
     seen = np.zeros(len(frame), dtype=int)
     records = []
-    if classifier == "lr" and config["label"] != "compartment":
-        raise ValueError("Only the historical cell-type RF protocol is registered")
+    if config["label"] == "cell_type" and config["scope"] != "pooled":
+        raise ValueError("Cell type must pool all types; conditioning on the true type is forbidden")
     for fold in range(5):
         scopes = sorted(frame.cell_type.unique()) if config["scope"] == "by_type" else [None]
         for scope in scopes:
@@ -56,6 +56,8 @@ def evaluate(x, frame, config, classifier, workers):
                 with warnings.catch_warnings():
                     warnings.simplefilter("error", ConvergenceWarning)
                     model.fit(x[train], y[train])
+                if int(model.named_steps["standardscaler"].n_samples_seen_) != len(train):
+                    raise ValueError("Scaler was not fit on the training fold")
                 learned_classes = model.named_steps["logisticregression"].classes_
                 n_iter = model.named_steps["logisticregression"].n_iter_.tolist()
             probability[np.ix_(test, learned_classes.astype(int))] = model.predict_proba(x[test])

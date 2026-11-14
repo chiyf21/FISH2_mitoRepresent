@@ -30,10 +30,6 @@ class Tee:
 
 
 def selected_tasks(args):
-    if args.classifier == "lr":
-        if args.task != "compartment":
-            raise ValueError("LR requires explicit --task compartment; cell-type remains RF")
-        return ["compartment"]
     return list(TASKS) if args.task == "all" else [args.task]
 
 
@@ -67,7 +63,7 @@ def run(args):
         classifier_parameters=(dict(n_estimators=100, min_weight_fraction_leaf=.01, max_features="sqrt",
             sample_weight="inverse training class count", scaling="none", random_state="20261113 + fold")
             if args.classifier == "rf" else dict(regularization="L2", C=1., solver="lbfgs",
-            class_weight="balanced", max_iter=3000, scaling="train-only StandardScaler per type-fold")),
+            class_weight="balanced", max_iter=3000, scaling="train-only StandardScaler; per type-fold for compartment, per pooled fold for cell_type")),
         handcrafted_columns=config["handcrafted_columns"], aggregation="mean log10(clip(p,1e-15,1))")
     dump(out / "run.json", meta)
     with (out / "run.log").open("w") as log, contextlib.redirect_stdout(Tee(sys.stdout, log)):

@@ -5,7 +5,7 @@
 - 任务只含compartment和cell_type；默认不要增加研究、搜索超参数、训练encoder或改变标签/划分。
 - 先tasks/inspect，再run；新embedding必须以record_id严格映射，不得用body_id充当实例ID，不得静默取子集。
 - compartment默认5059/QC=ok/axon-dendrite/分类型训练/body×真实区室oracle聚合。
-- cell_type默认全部5568/六类混合RF/body聚合；不能按真实细胞类型拆开训练。
+- cell_type默认全部5568/六类混合RF或LR/body聚合；不能按真实细胞类型拆开训练。
 - 只把向量或声明的22维手工特征输入分类器，ID/标签/fold/来源等不是特征。LR的scaler只拟合对应训练折。
 - owner填实际调用者，name写实验身份；输出自动唯一化，禁止覆盖别人或历史实验。
 - 新checkpoint先确认真实架构、训练预处理、编码阶段和对应导出器，生成checkpoint计划；不要把示例exporter当作已验证适配器。

@@ -19,9 +19,9 @@
 | 划分 | 固定五折，按body隔离，seed=20261113 | 固定五折，按body隔离，seed=20261113 |
 | RF训练范围 | 每种神经元类型单独训练 | 六种类型混合训练一个六分类器 |
 | 聚合 | body_id + true compartment，oracle grouping | body_id，每个body一个细胞类型预测 |
-| 原有分类器 | RF；另保留已跑过的固定LR profile | RF |
+| 分类器 | RF；固定LR profile | RF；固定多分类LR profile |
 | RF参数 | 100树、min_weight_fraction_leaf=.01、max_features=sqrt、训练类别计数倒数sample_weight；不标准化 | 相同 |
-| LR参数 | L2、lbfgs、C=1、class_weight=balanced、max_iter=3000；每个类型/训练折单独StandardScaler | 未注册LR，避免新增未验证协议 |
+| LR参数 | L2、lbfgs、C=1、class_weight=balanced、max_iter=3000；每个类型/训练折单独StandardScaler | 同一L2/lbfgs/C=1/balanced/max_iter=3000；每折全部训练body拟合StandardScaler，多分类混合训练 |
 
 两者均先输出实例OOF概率，聚合采用组内平均 log10(clip(p,1e-15,1)) 后 argmax。
 body ID不是线粒体ID。所有embedding都以完整record_id一一连接，缺目标实例、重复ID、body不符或输入hash变化会报错，不会静默取交集。
@@ -45,6 +45,12 @@ $FISH2_PY $FISH2_TASKS/run.py run --embedding $FISH2_TASKS/assets/reviewed81_v1/
 ```
 
 `--owner`填写实际使用者，不要三个人都写cyf。`--name`填写本次实验标识；输出目录自动唯一化。`--workers`默认2；BLAS线程默认1。以上评测都在CPU上，不启动编码器或占用GPU。
+
+Cell Type 的固定LR入口（相同实例/fold，按body聚合）：
+```bash
+$FISH2_PY $FISH2_TASKS/run.py run --embedding $FISH2_TASKS/assets/reviewed81_v1/canonical_balanced1152.json --task cell_type --classifier lr --with-handcrafted --owner YOUR_NAME --name celltype_balanced_lr
+$FISH2_PY $FISH2_TASKS/run.py run --embedding $FISH2_TASKS/assets/reviewed81_v1/canonical_fused384.json --task cell_type --classifier lr --owner YOUR_NAME --name celltype_fused_lr
+```
 
 ## 直接拿到新embedding
 

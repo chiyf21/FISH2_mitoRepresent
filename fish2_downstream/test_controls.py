@@ -11,6 +11,9 @@ from fish2_downstream.inputs import register, load, align
 from fish2_downstream.common import new_directory, dump, read
 from fish2_downstream.checkpoint import checkpoint_job
 from fish2_downstream.assets import folds
+from fish2_downstream.evaluate import evaluate
+from fish2_downstream.cli import selected_tasks
+from sklearn.preprocessing import StandardScaler
 
 
 class InputsTest(unittest.TestCase):
@@ -67,6 +70,35 @@ class InputsTest(unittest.TestCase):
             plan = read(next((d / "jobs").glob("*/plan.json")))
             self.assertFalse(plan["executed"])
             self.assertEqual(plan["argv"][2], str(checkpoint))
+
+    def test_cell_type_lr_routes_without_type_conditioning(self):
+        self.assertEqual(selected_tasks(Namespace(task="cell_type", classifier="lr")), ["cell_type"])
+        self.assertEqual(selected_tasks(Namespace(task="all", classifier="lr")), ["compartment", "cell_type"])
+
+    def test_cell_type_lr_pools_classes_and_fits_scaler_on_training_only(self):
+        classes = ["CON", "GC", "MON1", "MON2", "PC", "VMN"]
+        rows = [dict(record_id=f"{k}-{fold}-{j}", body_id=f"{k}-{fold}", cell_type=label,
+                     label=k, fold=fold) for fold in range(5)
+                for k, label in enumerate(classes) for j in range(2)]
+        frame = pd.DataFrame(rows)
+        x = np.random.default_rng(5).normal(size=(len(frame), 4))
+        config = dict(label="cell_type", classes=classes, scope="pooled", group=["body_id"], groups=30)
+        seen = []
+        original_fit = StandardScaler.fit
+        def capture(scaler, values, y=None, **kwargs):
+            seen.append(values.copy())
+            return original_fit(scaler, values, y=y, **kwargs)
+        with patch.object(StandardScaler, "fit", capture):
+            scores, instance, groups, records = evaluate(x, frame, config, "lr", 1)
+        self.assertEqual(len(seen), 5)
+        self.assertEqual(len(records), 5)
+        self.assertTrue(all(row["scope"] == "all_types" for row in records))
+        for fold in range(5):
+            np.testing.assert_array_equal(seen[fold], x[frame.fold.ne(fold)])
+        self.assertEqual(len(instance), 60)
+        self.assertEqual(len(groups), 30)
+        with self.assertRaises(ValueError):
+            evaluate(x, frame, dict(config, scope="by_type"), "lr", 1)
 
 
 if __name__ == "__main__":
