@@ -47,5 +47,58 @@
     "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/fish2_reviewed_81_protocol/embedding_features.py": "ff504ca32c9f6a048ae639dc3eae930b7287c38a0ddb3aab547128b2b4b5e35d",
     "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/compartment_classification/balanced_confusion_20261113_v1/fish2/metrics.json": "6819b02076140de14edbb386e82782d02d3e17cb1172d852f2fce756ac6ac4c3",
     "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/compartment_classification/balanced_lr_20261113_v1/fish2/metrics.json": "3b208c918ffdbf0987ed51fd14a70a3daba58333740e85487f3a533077ca2fef"
+  },
+  "cell_type_lr_20261114": {
+    "benchmark": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/benchmarks/celltype_lr_epoch050_20261114_v1",
+    "report": "CELL_TYPE_LR_BENCHMARK_20261114.md",
+    "run_code_commit": "383e5d5e3e7f1f84d67a00aca169f70ff3dfee9a",
+    "instances": 5568,
+    "bodies": 81,
+    "fold_seed": 20261113,
+    "training": "pooled six-class LR; train-fold scaler; L2 C=1 lbfgs balanced max_iter=3000",
+    "runs": {
+      "Handcrafted22D": {
+        "lr": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/runs/20261114T124740Z_codex_benchmark_celltype_epoch050_balanced_lr_c3a955b5",
+        "rf": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/runs/20261114T122756Z_codex_validation_historical_rf_e8448c2f",
+        "lr_code": "383e5d5e3e7f1f84d67a00aca169f70ff3dfee9a",
+        "rf_code": "9b35e2bad41b81115ebdac566e08053adcd7b7e4",
+        "checkpoint": {
+          "path": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/mito_newmae_vicreg_reg02_cls005_20261105_01/checkpoints/refine_epoch050.pt",
+          "size": 720699813,
+          "mtime_ns": 1794316888436956169
+        },
+        "descriptor": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/assets/reviewed81_v1/canonical_balanced1152.json",
+        "run_sha256": "be420797cfe057fa5619351a3b8a4d57a80e693e04863fbacbf9baa24433bf62",
+        "rf_run_sha256": "19fa774caf5f4ac0da8fdde19b22edad2a567aa64194f7027186348dd8788c8d"
+      },
+      "Balanced1152D": {
+        "lr": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/runs/20261114T124740Z_codex_benchmark_celltype_epoch050_balanced_lr_c3a955b5",
+        "rf": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/runs/20261114T122756Z_codex_validation_historical_rf_e8448c2f",
+        "lr_code": "383e5d5e3e7f1f84d67a00aca169f70ff3dfee9a",
+        "rf_code": "9b35e2bad41b81115ebdac566e08053adcd7b7e4",
+        "checkpoint": {
+          "path": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/mito_newmae_vicreg_reg02_cls005_20261105_01/checkpoints/refine_epoch050.pt",
+          "size": 720699813,
+          "mtime_ns": 1794316888436956169
+        },
+        "descriptor": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/assets/reviewed81_v1/canonical_balanced1152.json",
+        "run_sha256": "be420797cfe057fa5619351a3b8a4d57a80e693e04863fbacbf9baa24433bf62",
+        "rf_run_sha256": "19fa774caf5f4ac0da8fdde19b22edad2a567aa64194f7027186348dd8788c8d"
+      },
+      "Fused384D": {
+        "lr": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/runs/20261114T124741Z_codex_benchmark_celltype_epoch050_fused_lr_e3485d15",
+        "rf": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/runs/20261114T124752Z_codex_validation_celltype_epoch050_fused_rf_reference_df4c087b",
+        "lr_code": "383e5d5e3e7f1f84d67a00aca169f70ff3dfee9a",
+        "rf_code": "383e5d5e3e7f1f84d67a00aca169f70ff3dfee9a",
+        "checkpoint": {
+          "path": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/mito_newmae_vicreg_reg02_cls005_20261105_01/checkpoints/refine_epoch050.pt",
+          "size": 720699813,
+          "mtime_ns": 1794316888436956169
+        },
+        "descriptor": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/assets/reviewed81_v1/canonical_fused384.json",
+        "run_sha256": "76d6a9564b5d7f7e48b5c9e28070df5fe6a280bad535a0a4ffc4fa69113aa9c5",
+        "rf_run_sha256": "ca80d4840b530ea1eb700125bb26fa428e1c8ddc89f0a46a174e36666f4bcb4f"
+      }
+    }
   }
 }

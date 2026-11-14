@@ -20,3 +20,8 @@
 - LR：/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/runs/20261114T122755Z_codex_validation_historical_lr_985b534f/
 
 checkpoint桥接只验证了计划与不执行路径。实际GPU导出需提供与新模型匹配、单独smoke过的原导出器；示例JSON不是已验证架构适配器。
+
+## Cell Type LR增量验证（2026-11-14）
+
+新增六类混合LR入口，7项单元测试通过，包含训练折scaler输入核对及禁止按真实类型训练。Handcrafted22、Balanced1152、Fused384共15次LR拟合全部收敛（129–1109次迭代）。
+Compartment LR实际重跑仍复现原Balanced结果；Fused Cell Type RF实际重跑复现历史body结果。三组RF与LR的冻结实例、fold及指标复算检查全部通过。详细运行目录和RF来源见Cell Type基准报告。

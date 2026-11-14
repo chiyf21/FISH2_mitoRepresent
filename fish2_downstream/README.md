@@ -106,3 +106,5 @@ spec的`cwd`和`argv`必须是该模型对应的真实代码，支持`{checkpoin
 历史回归：`python -m fish2_downstream.verify_reference --rf-run /ABS/completed_rf_run --lr-run /ABS/completed_lr_run`。
 
 已完成的逐项回归验证见 [VALIDATION.md](VALIDATION.md)。
+
+Cell Type三种表示的固定LR/RF基准见 [CELL_TYPE_LR_BENCHMARK_20261114.md](CELL_TYPE_LR_BENCHMARK_20261114.md)。
