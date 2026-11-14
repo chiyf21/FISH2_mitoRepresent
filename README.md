@@ -48,3 +48,40 @@ CUDA_VISIBLE_DEVICES=2 python fusion50/refine/export.py \
 ```
 
 Export creates `fused_12.npy` and `instance_map.csv` in the same row order. Input data, run outputs and weights stay outside the checkout. Load only trusted checkpoints. [Source provenance](SOURCE_MAP.md).
+
+## Balanced1152D without a projection head
+
+The entry point fusion50/refine/train_no_projection.py starts directly from a
+trusted, completed NNA20 checkpoint. It preserves the baseline cohort, point
+cache, physical spacing, four-rank sampler, RNG states, PairBalance, L9–L12
+losses, both CLS regularizers and the original 50-epoch optimizer schedule.
+Only both CLS tokens and both encoders' last four blocks are trainable.
+The entire Fusion MLP is frozen, excluded from AdamW and guarded against execution.
+Losses receive PairBalance's 1152-dimensional output directly.
+
+Create an external JSON configuration from the baseline configuration, adding
+without_fusion_head=true, baseline_run, init_pretrain, point_checkpoint,
+image_checkpoint, spacing_xyz_nm, and smoke_result (the path to the smoke
+output's complete.json). Retain the baseline's pointclouds, seed, batch size,
+world size and learning rates. The trainer reads the baseline's exact cohort and
+NNA20 calibration probe; it does not rerun either MAE or NNA.
+
+    CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.run --standalone --nproc_per_node=4 \
+      fusion50/refine/train_no_projection.py --config /runs/nohead/config.json \
+      --output /runs/nohead/smoke --smoke
+    CUDA_VISIBLE_DEVICES=4,5,6,7 python -m torch.distributed.run --standalone --nproc_per_node=4 \
+      fusion50/refine/train_no_projection.py --config /runs/nohead/config.json \
+      --output /runs/nohead
+
+The two-batch smoke checks all four gradient groups, frozen parameters, actual
+updates in each trainable block and CLS, unchanged unused MLP weights, finite
+loss/gradients, GPU memory and full checkpoint/optimizer/RNG restoration. A
+separate frozen reference MLP measures old and new losses on the same first batch
+without contributing to training. Production requires a passing smoke result.
+Every epoch saves a full atomic checkpoint and checksum manifest; last.pt
+supports --resume with the same four ranks. STOP_AFTER_EPOCH pauses at a saved
+epoch boundary. Keep all outputs outside Git.
+
+The existing fusion50/refine/export.py reads the no-head configuration and
+exports 1152-dimensional L12 vectors to fused_12.npy with the usual
+instance_map.csv for the existing downstream LR workflow.

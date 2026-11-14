@@ -1,4 +1,4 @@
-"""Export 384-dimensional L12 Fusion50 vectors in manifest order."""
+"""Export L12 Fusion50 vectors, or Balanced1152D for a no-head checkpoint."""
 import argparse
 import csv
 import json
@@ -20,12 +20,20 @@ def main():
     if args.batch_size < 1:
         parser.error("--batch-size must be positive")
     config = json.loads(args.config.read_text())
-    rows = records(config)
-    points = load_points(config, rows)
+    if config.get("without_fusion_head"):
+        from train_no_projection import load_data
+        rows, points = load_data(config)
+    else:
+        rows = records(config)
+        points = load_points(config, rows)
     device = torch.device("cuda:0")
     point, grouping, image = load_models(config, device)
-    model = core.System(point, image).to(device).eval()
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    no_head = bool(config.get("without_fusion_head", False))
+    if no_head != bool(checkpoint.get("config", {}).get("without_fusion_head", False)):
+        raise ValueError("Config and checkpoint disagree on the fusion head")
+    model = core.System(point, image, without_fusion_head=no_head).to(device).eval()
+    dimension = 1152 if no_head else 384
     if checkpoint["stage"] != "refine":
         raise ValueError("Use a fusion-stage checkpoint")
     model.load_state_dict(checkpoint["model"], strict=True)
@@ -33,7 +41,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     temporary = args.output / "fused_12.partial.npy"
     result = np.lib.format.open_memmap(temporary, mode="w+", dtype="float32",
-                                      shape=(len(rows), 384))
+                                      shape=(len(rows), dimension))
     with torch.inference_mode():
         for start in range(0, len(rows), args.batch_size):
             batch = rows[start:start + args.batch_size]

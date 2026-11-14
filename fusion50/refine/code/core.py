@@ -101,8 +101,9 @@ class MLPFusion(nn.Module):
         return self.mlp(torch.cat((p,i),dim=-1))
 
 class System(nn.Module):
-    def __init__(self,point,image):
+    def __init__(self,point,image,without_fusion_head=False):
         super().__init__();self.point=point;self.image=image
+        self.without_fusion_head=without_fusion_head
         self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
         for m in [point,image]:m.requires_grad_(False)
         for block in point.blocks.blocks[-4:]:block.requires_grad_(True)
@@ -146,7 +147,7 @@ class System(nn.Module):
         fused={};stats={}
         for l in LAYERS:
             pair,st=self.balance(p[l],i[l],l,self.training and loss)
-            fused[l]=self.fusion(pair.float());stats[str(l)]=st
+            fused[l]=pair.float() if self.without_fusion_head else self.fusion(pair.float());stats[str(l)]=st
         if not loss:return p,i,fused,stats
         parts={};losses=[]
         for l in LAYERS:
