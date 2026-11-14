@@ -101,9 +101,10 @@ class MLPFusion(nn.Module):
         return self.mlp(torch.cat((p,i),dim=-1))
 
 class System(nn.Module):
-    def __init__(self,point,image,without_fusion_head=False):
+    def __init__(self,point,image,without_fusion_head=False,main_covariance_scale=1.):
         super().__init__();self.point=point;self.image=image
         self.without_fusion_head=without_fusion_head
+        self.main_covariance_scale=float(main_covariance_scale)
         self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
         for m in [point,image]:m.requires_grad_(False)
         for block in point.blocks.blocks[-4:]:block.requires_grad_(True)
@@ -151,7 +152,7 @@ class System(nn.Module):
         if not loss:return p,i,fused,stats
         parts={};losses=[]
         for l in LAYERS:
-            value, terms=vicreg(fused[l])
+            value, terms=vicreg(fused[l],covariance_scale=self.main_covariance_scale)
             contrastive, extra=filtered_infonce(fused[l],ids,topk=20,temperature=0.2)
             point_reg, point_terms=cls_regularizer(p[l])
             image_reg, image_terms=cls_regularizer(i[l])
@@ -162,7 +163,7 @@ class System(nn.Module):
             for k,v in terms.items():parts[f'{l}/{k}']=v
         return torch.stack(losses).mean(),parts,stats
 
-def vicreg(z):
+def vicreg(z,covariance_scale=1.):
     # Differentiable global-batch gather; pool both views as in the old VICReg implementation.
     if dist.is_initialized() and dist.get_world_size()>1:
         from torch.distributed.nn.functional import all_gather
@@ -176,7 +177,7 @@ def vicreg(z):
     cov=centered.T@centered/(len(centered)-1)
     off=~torch.eye(a.shape[-1],device=a.device,dtype=torch.bool)
     covloss=cov[off].square().sum()/a.shape[-1]
-    return 25*inv+5*var+0.2*covloss,dict(invariance=inv.detach(),variance=var.detach(),covariance=covloss.detach())
+    return 25*inv+5*var+(0.2*covariance_scale)*covloss,dict(invariance=inv.detach(),variance=var.detach(),covariance=covloss.detach())
 
 def cls_regularizer(z):
     # Direct raw CLS supervision, before balancing; each modality has its own 1/20 weights.

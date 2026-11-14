@@ -32,7 +32,11 @@ def main():
     no_head = bool(config.get("without_fusion_head", False))
     if no_head != bool(checkpoint.get("config", {}).get("without_fusion_head", False)):
         raise ValueError("Config and checkpoint disagree on the fusion head")
-    model = core.System(point, image, without_fusion_head=no_head).to(device).eval()
+    scale = float(config.get("main_covariance_scale", 1.))
+    if scale != float(checkpoint.get("config", {}).get("main_covariance_scale", 1.)):
+        raise ValueError("Config and checkpoint disagree on the covariance scale")
+    model = core.System(point, image, without_fusion_head=no_head,
+                        main_covariance_scale=scale).to(device).eval()
     dimension = 1152 if no_head else 384
     if checkpoint["stage"] != "refine":
         raise ValueError("Use a fusion-stage checkpoint")

@@ -56,7 +56,7 @@ def dot(a, b):
     return float(torch.stack(values).sum()) if values else 0.
 
 
-def analyze(model, grouping, rows, points, positions, epoch, batch, device):
+def analyze(model, grouping, rows, points, positions, epoch, batch, device, weights=WEIGHTS):
     selected = [rows[j] for j in positions]
     ids = torch.tensor(positions, device=device)
     inputs = core.prepare(selected, points, model.point, grouping, model.image,
@@ -76,7 +76,7 @@ def analyze(model, grouping, rows, points, positions, epoch, batch, device):
     model.train()
     with torch.autocast("cuda", dtype=torch.bfloat16):
         total, logged, _ = model(inputs, ids)
-        terms = {k: [] for k in WEIGHTS}
+        terms = {k: [] for k in weights}
         for layer in core.LAYERS:
             inv, var, cov = moments(captured[layer])
             infonce, _ = core.filtered_infonce(captured[layer], ids, topk=20, temperature=.2)
@@ -94,7 +94,7 @@ def analyze(model, grouping, rows, points, positions, epoch, batch, device):
                 assert torch.allclose(cov.detach(), logged[f"{layer}/{modality}_covariance"],
                                       rtol=1e-6, atol=1e-6)
         unweighted = {k: torch.stack(v).mean() for k, v in terms.items()}
-        weighted = {k: v*WEIGHTS[k] for k, v in unweighted.items()}
+        weighted = {k: v*weights[k] for k, v in unweighted.items()}
         rebuilt = torch.stack(list(weighted.values())).sum()
     hook.remove()
     model.encode = original_encode
@@ -110,7 +110,7 @@ def analyze(model, grouping, rows, points, positions, epoch, batch, device):
             term, parameters, retain_graph=True, allow_unused=True)
         assert all(g is None or torch.isfinite(g).all() for g in derivatives[key])
         term_report[key] = dict(
-            coefficient=WEIGHTS[key], raw_loss=float(unweighted[key].detach()),
+            coefficient=weights[key], raw_loss=float(unweighted[key].detach()),
             weighted_loss=float(term.detach()), gradient_l2=norm(derivatives[key]),
             gradient_l2_by_group={k: norm(derivatives[key], ix)
                                   for k, ix in group_indices.items()})
@@ -125,7 +125,7 @@ def analyze(model, grouping, rows, points, positions, epoch, batch, device):
         "all_covariance_terms": ["covariance", "point_cls_covariance", "image_cls_covariance"],
         "non_covariance_terms": ["invariance", "variance", "infonce",
                                   "point_cls_variance", "image_cls_variance"],
-        "all_except_main_covariance": [k for k in WEIGHTS if k != "covariance"],
+        "all_except_main_covariance": [k for k in weights if k != "covariance"],
     }.items():
         vector = add_gradients([derivatives[k] for k in names])
         combined[key] = dict(gradient_l2=norm(vector),
@@ -159,6 +159,7 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--smoke-updates", type=int, default=0)
     args = parser.parse_args()
     cfg = json.loads(args.config.read_text())
     if not cfg.get("without_fusion_head"):
@@ -169,10 +170,16 @@ def main():
     torch.cuda.set_device(device)
     rows, points = load_data(cfg)
     point, grouping, image = load_models(cfg, device)
-    model = core.System(point, image, without_fusion_head=True).to(device)
+    scale = float(cfg.get("main_covariance_scale", 1.))
+    model = core.System(point, image, without_fusion_head=True,
+                        main_covariance_scale=scale).to(device)
     ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    assert ck["stage"] == "refine" and ck["epoch"] == 0 and ck["step"] == 2300
-    assert ck["config"]["without_fusion_head"] and not ck["config"].get("smoke")
+    assert ck["stage"] == "refine" and ck["config"]["without_fusion_head"]
+    assert ck["step"] == 2300+args.smoke_updates
+    assert ck["epoch"] == (1 if args.smoke_updates else 0)
+    assert bool(ck["config"].get("smoke")) == bool(args.smoke_updates)
+    assert float(ck["config"].get("main_covariance_scale", 1.)) == scale
+    source_epoch, source_step = ck["epoch"], ck["step"]
     model.load_state_dict(ck["model"], strict=True)
     restore(ck["rng_per_rank"][0], device)
     model.phase = "refine"
@@ -194,20 +201,22 @@ def main():
         by_rank.append([tr[k] for k in sampler])
     args.output.mkdir(parents=True, exist_ok=False)
     results = []
+    weights = dict(WEIGHTS, covariance=.2*scale)
     for batch in (1, 40):
         positions = [j for rank_ids in by_rank for j in rank_ids[(batch-1)*16:batch*16]]
         torch.cuda.reset_peak_memory_stats(device)
-        result = analyze(model, grouping, rows, points, positions, 1, batch, device)
+        result = analyze(model, grouping, rows, points, positions, 1, batch, device, weights)
         results.append(result)
         write(args.output/f"batch{batch:03d}.json", result)
     after = parameter_sha(model)
     assert before == after
     write(args.output/"complete.json", dict(
-        status="diagnostic_complete", checkpoint=str(args.checkpoint), checkpoint_epoch=0,
-        checkpoint_step=2300, optimizer_steps=0, parameter_sha256_before=before,
+        status="diagnostic_complete", checkpoint=str(args.checkpoint), checkpoint_epoch=source_epoch,
+        checkpoint_step=source_step, main_covariance_scale=scale,
+        source_smoke_updates=args.smoke_updates, optimizer_steps=0, parameter_sha256_before=before,
         parameter_sha256_after=after, parameters_unchanged=True, results=results,
         scope="single-GPU global batch64; original four-rank sampler order and augmentations; "
-              "two fixed batches at epoch000 parameters, not the lost step2340 state"))
+              "two fixed batches at the explicitly verified checkpoint; diagnostic performs no updates"))
     print("DIAGNOSTIC_COMPLETE_NO_UPDATES", flush=True)
 
 

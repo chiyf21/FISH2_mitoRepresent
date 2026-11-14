@@ -85,3 +85,18 @@ epoch boundary. Keep all outputs outside Git.
 The existing fusion50/refine/export.py reads the no-head configuration and
 exports 1152-dimensional L12 vectors to fused_12.npy with the usual
 instance_map.csv for the existing downstream LR workflow.
+
+The calibrated no-head configuration may set main_covariance_scale=0.002,
+changing only the main VICReg covariance coefficient from 0.2 to 0.0004.
+Raw Point/Image CLS coefficients remain 1.25 for variance and 0.05 for covariance.
+calibrate_no_projection.py compares both representations from the same NNA20
+checkpoint and two fixed batches without optimizer updates, including encoder
+gradient norms and directions. Do not initialize formal training from smoke
+checkpoints or any checkpoint that has received Fusion updates.
+
+A selected smoke can include original batch numbers 1,2,41,42 to cover an input
+that previously stalled a rank. Per-rank phase files distinguish preprocessing,
+forward, backward and optimizer progress. distributed_timeout_seconds configures
+the collective timeout without changing data, augmentation or batch assignment.
+Production still starts from NNA20, writes an untouched refinement epoch000,
+then runs all 50 epochs with the original optimizer schedule.

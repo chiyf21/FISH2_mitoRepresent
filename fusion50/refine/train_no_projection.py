@@ -8,6 +8,7 @@ import random
 import statistics
 import time
 from pathlib import Path
+from datetime import timedelta
 
 import numpy as np
 import torch
@@ -109,6 +110,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--smoke-batches", help="comma-separated original batch numbers")
     args = parser.parse_args()
     cfg = json.loads(args.config.read_text())
     if not cfg.get("without_fusion_head"):
@@ -118,13 +120,26 @@ def main():
         raise ValueError("Keep the baseline world size of four for exact sampler/RNG restoration")
     torch.cuda.set_device(local)
     device = torch.device("cuda", local)
-    dist.init_process_group("nccl")
+    timeout = float(cfg.get("distributed_timeout_seconds", 600))
+    dist.init_process_group("nccl", timeout=timedelta(seconds=timeout))
     torch.set_num_threads(4)
     torch.backends.cuda.matmul.allow_tf32 = True
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     (out / "results").mkdir(exist_ok=True)
     core.ROOT = out
+    (out / "rank_status").mkdir(exist_ok=True)
+    def rank_stage(stage, epoch=0, batch=0):
+        write(out / "rank_status" / f"rank{rank}.json",
+              dict(rank=rank, stage=stage, epoch=epoch, batch=batch, time=time.time()))
+    scale = float(cfg.get("main_covariance_scale", 1.))
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("main_covariance_scale must be positive and finite")
+    expected_weights = dict(invariance=25., variance=5., covariance=.2*scale,
+                            infonce=1., point_variance=1.25, point_covariance=.05,
+                            image_variance=1.25, image_covariance=.05)
+    if cfg["loss_weights"] != expected_weights:
+        raise ValueError("Config effective loss coefficients disagree with the trainer")
     lock = None
     if rank == 0:
         lock = (out / "train.lock").open("a")
@@ -135,8 +150,19 @@ def main():
         raise FileNotFoundError("Resume requested without last.pt")
     if not args.smoke and not args.resume:
         smoke = json.loads(Path(cfg["smoke_result"]).read_text())
-        if smoke.get("status") != "smoke_passed":
+        if (smoke.get("status") != "smoke_passed" or
+                smoke.get("main_covariance_scale") != scale or
+                smoke.get("source_checkpoint") != cfg["init_pretrain"]):
             raise ValueError("Production requires a successful smoke test")
+        if cfg.get("post_smoke_gradient_result"):
+            check = json.loads(Path(cfg["post_smoke_gradient_result"]).read_text())
+            if (check.get("status") != "diagnostic_complete" or
+                    check.get("main_covariance_scale") != scale or
+                    check.get("optimizer_steps") != 0 or not check.get("parameters_unchanged")):
+                raise ValueError("Production requires the corrected post-smoke gradient check")
+            acceptance = json.loads(Path(cfg["validation_acceptance"]).read_text())
+            if acceptance.get("status") != "accepted":
+                raise ValueError("Corrected validation has not been accepted")
     seed = cfg["seed"]
     random.seed(seed)
     np.random.seed(seed)
@@ -148,7 +174,8 @@ def main():
     rng = np.random.default_rng(seed)
     probe = sorted(rng.choice(tr, 256, False).tolist() + rng.choice(va, 256, False).tolist())
     point, grouping, image = load_models(cfg, device)
-    model = core.System(point, image, without_fusion_head=True).to(device)
+    model = core.System(point, image, without_fusion_head=True,
+                        main_covariance_scale=scale).to(device)
     checkpoint_path = out / "last.pt" if args.resume else Path(cfg["init_pretrain"])
     ck = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if args.resume:
@@ -157,7 +184,8 @@ def main():
         if bool(ck["config"].get("smoke", False)) != args.smoke:
             raise ValueError("Smoke checkpoints cannot initialize production")
         for key in ("seed", "world_size", "global_batch", "lr_blocks", "lr_cls_heads",
-                    "pointclouds", "baseline_run", "init_pretrain", "spacing_xyz_nm"):
+                    "pointclouds", "baseline_run", "init_pretrain", "spacing_xyz_nm",
+                    "main_covariance_scale"):
             if ck["config"][key] != cfg[key]:
                 raise ValueError(f"Resume config mismatch: {key}")
         state = ck["model"]
@@ -188,6 +216,7 @@ def main():
     restore(ck["rng_per_rank"][rank], device)
     if not args.resume:
         calibrate(model, cfg, tr, probe, device)
+    ck_stage, ck_epoch, ck_step = ck["stage"], ck["epoch"], ck["step"]
     step = ck["step"]
     first_epoch = ck["epoch"] + 1 if args.resume else 1
     del state, ck
@@ -204,13 +233,20 @@ def main():
             discarded_state_prefix=None if args.resume else "point_nna.",
             baseline_nna_retrained=False, mae_retrained=False,
             fusion_forward_guard=True, fusion_trainable=False, fusion_in_optimizer=False,
-            representation="Balanced1152D", trainable_parameters={
+            representation="Balanced1152D", main_covariance_scale=scale,
+            source_stage=ck_stage, source_epoch=ck_epoch, source_optimizer_step=ck_step,
+            fresh_fusion_optimizer=not args.resume, trainable_parameters={
                 k: sum(p.numel() for p in v) for k, v in train_groups.items()},
             trainable_names=[n for n, p in model.named_parameters() if p.requires_grad]))
         write(out / "status.json", dict(status="initializing", phase="refine", epoch=first_epoch-1))
     sampler = DistributedSampler(tr, num_replicas=world, rank=rank, shuffle=True,
                                  seed=seed, drop_last=True)
     loader = DataLoader(tr, batch_size=16, sampler=sampler, drop_last=False, num_workers=0)
+    smoke_batches = (sorted(set(int(x) for x in args.smoke_batches.split(",")))
+                     if args.smoke_batches else cfg.get("smoke_batches", [1, 2]))
+    if args.smoke and (len(smoke_batches)<2 or min(smoke_batches)<1 or
+                       max(smoke_batches)>len(loader)):
+        raise ValueError("Invalid smoke batch selection")
     ddp = DDP(model, device_ids=[local], broadcast_buffers=False, find_unused_parameters=False)
     if not args.smoke and not args.resume:
         core.monitor(model, rows, probe, points, grouping, device, rank, world, 0, "refine")
@@ -234,11 +270,16 @@ def main():
         began = time.monotonic()
         total, count = 0., 0
         for batchno, positions in enumerate(loader, 1):
+            if args.smoke and batchno not in smoke_batches:
+                continue
             step_began = time.monotonic()
             rr = [rows[int(j)] for j in positions]
             ids = torch.tensor([r["cohort_index"] for r in rr], device=device)
+            rank_stage("prepare", epoch, batchno)
             inputs = core.prepare(rr, points, point, grouping, image, device, epoch + 1000,
                                   True, point_only=False)
+            prepare_seconds = time.monotonic()-step_began
+            rank_stage("forward", epoch, batchno)
             frac = (epoch - 1) + (batchno - 1) / len(loader)
             factor = min(1., frac + 1/len(loader)) * (.5 + .5*math.cos(math.pi*frac/50))
             for group in opt.param_groups:
@@ -263,8 +304,13 @@ def main():
                 if rank == 0:
                     write(out / "loss_scale_comparison.json", comparison)
                 del reference, captured
+            rank_stage("backward", epoch, batchno)
             loss.backward()
             trainable = [p for p in model.parameters() if p.requires_grad]
+            group_grad_norms = {
+                key: float(torch.stack([p.grad.detach().float().square().sum()
+                                       for p in values if p.grad is not None]).sum().sqrt())
+                for key, values in train_groups.items()} if rank == 0 else None
             grad = torch.nn.utils.clip_grad_norm_(trainable, 1.)
             if not torch.isfinite(grad):
                 raise RuntimeError("Nonfinite gradient")
@@ -279,9 +325,11 @@ def main():
                 assert all(x > 0 for x in gradient_sums.values())
                 reps = references(model)
                 before = {k: p.detach().clone() for k, p in reps.items()}
+            rank_stage("optimizer", epoch, batchno)
             opt.step()
             step += 1
-            total += float(loss) * len(rr)
+            rank_stage("updated", epoch, batchno)
+            total += float(loss.detach()) * len(rr)
             count += len(rr)
             if args.smoke:
                 deltas = {k: float((p.detach() - before[k]).abs().max()) for k, p in reps.items()}
@@ -300,7 +348,15 @@ def main():
                     optimizer_step=step, refinement_optimizer_step=step-2300,
                     loss=float(loss), parts={k: float(v) for k, v in parts.items()},
                     grad_norm=float(grad), elapsed_epoch_sec=time.monotonic()-began,
-                    step_seconds=time.monotonic()-step_began, time=time.time(),
+                    step_seconds=time.monotonic()-step_began, prepare_seconds=prepare_seconds,
+                    time=time.time(), main_covariance_scale=scale,
+                    clipped=bool(grad>1.), clip_coefficient=min(1.,1./(float(grad)+1e-6)),
+                    gradient_norms_by_group=group_grad_norms,
+                    weighted_loss_components={
+                        k: float(torch.stack([parts[f"{l}/{k}"] for l in core.LAYERS]).mean())*w
+                        for k, w in dict(invariance=25., variance=5., covariance=.2*scale,
+                                         infonce=1., point_regularizer=1.,
+                                         image_regularizer=1.).items()},
                     learning_rates=[g["lr"] for g in opt.param_groups],
                     peak_allocated_mib=torch.cuda.max_memory_allocated(device)/1024**2,
                     peak_reserved_mib=torch.cuda.max_memory_reserved(device)/1024**2,
@@ -309,7 +365,7 @@ def main():
                              for k, s in stats.items()})
                 append(out / "step_metrics.jsonl", record)
                 write(out / "status.json", dict(status="training", **record))
-            if args.smoke and batchno == 2:
+            if args.smoke and batchno == smoke_batches[-1]:
                 break
         training_seconds = time.monotonic()-began
         if not args.smoke:
@@ -341,8 +397,8 @@ def main():
             assert now["numpy"][0] == expected_rng["numpy"][0]
             assert np.array_equal(now["numpy"][1], expected_rng["numpy"][1])
             assert now["numpy"][2:] == expected_rng["numpy"][2:]
-            assert saved["stage"] == "refine" and saved["step"] == 2302
-            assert all(float(state["step"]) == 2 for state in opt.state.values())
+            assert saved["stage"] == "refine" and saved["step"] == 2300+len(smoke_batches)
+            assert all(float(state["step"]) == len(smoke_batches) for state in opt.state.values())
             payload = dict(rank=rank, checks=smoke_checks, checkpoint_restore="PASS",
                            peak_allocated_mib=torch.cuda.max_memory_allocated(device)/1024**2,
                            peak_reserved_mib=torch.cuda.max_memory_reserved(device)/1024**2)
@@ -354,7 +410,10 @@ def main():
     if rank == 0:
         write(out / "complete.json", dict(status="smoke_passed" if args.smoke else "training_complete",
                                          stage="refine", epoch=epoch, steps=step,
-                                         representation="Balanced1152D", time=time.time()))
+                                         representation="Balanced1152D", main_covariance_scale=scale,
+                                         source_checkpoint=cfg["init_pretrain"],
+                                         smoke_batches=smoke_batches if args.smoke else None,
+                                         time=time.time()))
     fusion_guard.remove()
     dist.barrier()
     dist.destroy_process_group()
