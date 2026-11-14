@@ -2,6 +2,8 @@
 
 这里固定两条已经跑过的任务，让同用 cyf 账号的人通过同一入口查询来源、导入新 embedding、复用合法划分并运行。代码纳入 FISH2_mitoRepresent；数据、模型、结果放在仓库外。入口不需要切换共享 main。
 
+**LR 是当前 learned embedding 的首选下游评价方法，RF 保留作为历史对照。下方通用运行示例均显式指定 `--classifier lr`。**
+
 共享路径：`/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream/`
 
 - `run.py`：指向 Git 工作树入口的符号链接。
@@ -35,7 +37,7 @@ FISH2_PY=/home/cyf/miniconda3/envs/cellmap_organelle/bin/python
 FISH2_TASKS=/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/fish2_downstream
 $FISH2_PY $FISH2_TASKS/run.py tasks
 $FISH2_PY $FISH2_TASKS/run.py inspect --embedding $FISH2_TASKS/assets/reviewed81_v1/canonical_balanced1152.json
-$FISH2_PY $FISH2_TASKS/run.py run --embedding $FISH2_TASKS/assets/reviewed81_v1/canonical_balanced1152.json --task all --classifier rf --with-handcrafted --owner YOUR_NAME --name fusion50_reference
+$FISH2_PY $FISH2_TASKS/run.py run --embedding $FISH2_TASKS/assets/reviewed81_v1/canonical_balanced1152.json --task all --classifier lr --with-handcrafted --owner YOUR_NAME --name fusion50_reference
 $FISH2_PY $FISH2_TASKS/run.py runs
 ```
 
@@ -58,7 +60,7 @@ NPY必须配实例映射，至少含record_id和embedding_row，建议同时有b
 ```bash
 $FISH2_PY $FISH2_TASKS/run.py register --matrix /ABS/new_vectors.npy --instance-map /ABS/instance_map.csv --representation MY_CHECKPOINT_L12_balanced_CLS --checkpoint /ABS/model.pt --output /ABS/new_embedding.json
 $FISH2_PY $FISH2_TASKS/run.py inspect --embedding /ABS/new_embedding.json
-$FISH2_PY $FISH2_TASKS/run.py run --embedding /ABS/new_embedding.json --task all --classifier rf --with-handcrafted --owner YOUR_NAME --name my_new_checkpoint
+$FISH2_PY $FISH2_TASKS/run.py run --embedding /ABS/new_embedding.json --task all --classifier lr --with-handcrafted --owner YOUR_NAME --name my_new_checkpoint
 ```
 
 CSV使用`--matrix /ABS/embedding.csv`，默认只取`embedding_`前缀列；其他列名用`--columns f0 f1 ...`显式声明。禁止ID、标签、fold和其他元数据作为特征。descriptor记录向量阶段、shape、文件SHA256、checkpoint路径/文件stat和可选模型config。
