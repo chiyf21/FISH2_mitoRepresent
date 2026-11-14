@@ -1,0 +1,51 @@
+{
+  "cell_type": {
+    "source_code": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/cell_type_fig2c_rf_20261113/run_cell_type.py",
+    "completed_results": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/cell_type_fig2c_rf_20261113/results.json",
+    "result_key": "reviewed_81",
+    "instances": 5568,
+    "bodies": 81,
+    "classes": [
+      "CON",
+      "GC",
+      "MON1",
+      "MON2",
+      "PC",
+      "VMN"
+    ],
+    "source_code_git": "script was under runs/, no standalone Git commit recorded; content SHA256 retained",
+    "stdout_log": "not found in its task directory",
+    "operator": "not recorded; shared cyf account",
+    "model": "Fish2 Fusion50 epoch050 L12",
+    "scope": "pooled RF, one vote per body",
+    "seed": 20261113
+  },
+  "compartment": {
+    "rf_results": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/compartment_classification/balanced_confusion_20261113_v1/fish2/metrics.json",
+    "rf_log": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/compartment_classification/balanced_confusion_20261113_v1/run.log",
+    "lr_results": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/compartment_classification/balanced_lr_20261113_v1/fish2/metrics.json",
+    "lr_log": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/compartment_classification/balanced_lr_20261113_v1/run.log",
+    "instances": 5059,
+    "bodies": 81,
+    "groups": 161,
+    "source_commits": [
+      "95cf35c",
+      "6df5d67"
+    ],
+    "scope": "by neuron type, body + true compartment oracle grouping",
+    "labels": "axon/dendrite, compartment_qc=ok; reviewed label provenance remains limited"
+  },
+  "archived_protocol": {
+    "path": "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/fish2_reviewed_81_protocol/results.json",
+    "note": "Earlier seed=0, global matrix zscore, and other label variants; not the registered protocol"
+  },
+  "handcrafted21_warning": "Historical cell-type 21D drops SBI; other 21D ablations may drop skeleton length. Read exact column list; default here is 22D.",
+  "source_sha256": {
+    "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/cell_type_fig2c_rf_20261113/run_cell_type.py": "13ff4a6f3358c6492e268d8b88509c10044582b126e7a054ca911668fd01d3d0",
+    "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/cell_type_fig2c_rf_20261113/results.json": "4e31cb9dd3fd687999ce24efc225e6c9e61570095cf46cac15dad6ebec263274",
+    "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/fish2_reviewed_81_protocol/run_reviewed81.py": "6f3eb2f5dc0cf5e823d59cfb3ef0765d96b4fd76befd2c227a9b303d6f7343d3",
+    "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/fish2_reviewed_81_protocol/embedding_features.py": "ff504ca32c9f6a048ae639dc3eae930b7287c38a0ddb3aab547128b2b4b5e35d",
+    "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/compartment_classification/balanced_confusion_20261113_v1/fish2/metrics.json": "6819b02076140de14edbb386e82782d02d3e17cb1172d852f2fce756ac6ac4c3",
+    "/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/compartment_classification/balanced_lr_20261113_v1/fish2/metrics.json": "3b208c918ffdbf0987ed51fd14a70a3daba58333740e85487f3a533077ca2fef"
+  }
+}
