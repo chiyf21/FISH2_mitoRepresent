@@ -132,6 +132,8 @@ def main():
     def rank_stage(stage, epoch=0, batch=0):
         write(out / "rank_status" / f"rank{rank}.json",
               dict(rank=rank, stage=stage, epoch=epoch, batch=batch, time=time.time()))
+    if cfg.get("numpy_madvise_hugepage") is False and os.environ.get("NUMPY_MADVISE_HUGEPAGE") != "0":
+        raise ValueError("This run requires process-local NUMPY_MADVISE_HUGEPAGE=0")
     scale = float(cfg.get("main_covariance_scale", 1.))
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError("main_covariance_scale must be positive and finite")
@@ -235,7 +237,9 @@ def main():
             fusion_forward_guard=True, fusion_trainable=False, fusion_in_optimizer=False,
             representation="Balanced1152D", main_covariance_scale=scale,
             source_stage=ck_stage, source_epoch=ck_epoch, source_optimizer_step=ck_step,
-            fresh_fusion_optimizer=not args.resume, trainable_parameters={
+            fresh_fusion_optimizer=not args.resume,
+            numpy_madvise_hugepage_env=os.environ.get("NUMPY_MADVISE_HUGEPAGE"),
+            trainable_parameters={
                 k: sum(p.numel() for p in v) for k, v in train_groups.items()},
             trainable_names=[n for n, p in model.named_parameters() if p.requires_grad]))
         write(out / "status.json", dict(status="initializing", phase="refine", epoch=first_epoch-1))

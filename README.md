@@ -100,3 +100,8 @@ forward, backward and optimizer progress. distributed_timeout_seconds configures
 the collective timeout without changing data, augmentation or batch assignment.
 Production still starts from NNA20, writes an untouched refinement epoch000,
 then runs all 50 epochs with the original optimizer schedule.
+
+For the known large input on this host, NUMPY_MADVISE_HUGEPAGE=0 disables NumPy's
+process-local transparent-huge-page advice. It changes allocation behavior only,
+and leaves all arrays, RNG draws and augmentation mathematics unchanged. The
+calibrated configuration records and checks this environment setting.
