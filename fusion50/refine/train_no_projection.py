@@ -1,6 +1,5 @@
 """Refine Balanced1152D for 50 epochs, starting from a completed NNA20 run."""
 import argparse
-import copy
 import fcntl
 import json
 import math
@@ -249,7 +248,9 @@ def main():
             capture_hook = None
             reference = None
             if args.smoke and batchno == 1:
-                reference = copy.deepcopy(model.fusion).eval().requires_grad_(False)
+                with torch.random.fork_rng(devices=[device.index]):
+                    reference = core.MLPFusion().to(device).eval().requires_grad_(False)
+                reference.load_state_dict(model.fusion.state_dict(), strict=True)
                 capture_hook = model.balance.register_forward_hook(
                     lambda module, values, output: captured.__setitem__(values[2], output[0].detach()))
             with torch.autocast("cuda", dtype=torch.bfloat16):
