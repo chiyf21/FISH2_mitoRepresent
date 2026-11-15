@@ -83,8 +83,6 @@ def plot(values, output):
                ncol=3, frameon=False, fontsize=12)
     fig.text(.065, .09, "* No head also includes main covariance calibration (0.2 to 0.0004).",
              fontsize=11, color="#444444")
-    fig.text(.065, .055, "N/A: no completed Fused384D compartment result under this fixed-LR protocol.",
-             fontsize=11, color="#444444")
     for extension in ["png", "svg", "pdf"]:
         fig.savefig(output/f"fish2_lr_threeway.{extension}", dpi=220, facecolor="white")
     plt.close(fig)
@@ -93,6 +91,7 @@ def plot(values, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fused-compartment-run", type=Path, required=True)
     args = parser.parse_args()
     runs = [read(p/"run.json") for p in SOURCES]
     results = [read(p/"metrics.json") for p in SOURCES]
@@ -118,7 +117,33 @@ def main():
             tasks=list(scores),checkpoint=run["embedding"]["checkpoint"],
             embedding=run["embedding"]["representation"]))
     assert np.isfinite(values[:2]).all() and np.isfinite(values[2,:4]).all()
-    assert np.isnan(values[2,4:]).all()
+    path = args.fused_compartment_run.resolve()
+    run, scores = read(path/"run.json"), read(path/"metrics.json")
+    assert (path/"_SUCCESS.json").is_file() and run["status"] == "complete"
+    assert run["tasks"] == ["compartment"] and run["classifier"] == "lr"
+    assert run["feature_dimensions"]["embedding"] == 384
+    assert run["embedding"]["sha256"] == runs[2]["embedding"]["sha256"]
+    assert run["embedding"]["checkpoint"] == runs[2]["embedding"]["checkpoint"]
+    for field in ["asset_manifest_sha256", "classifier_parameters", "aggregation"]:
+        assert run[field] == runs[0][field], field
+    assert sha(path/"compartment/instances.csv") == sha(
+        Path(run["assets"])/"compartment_instances.csv")
+    for level, offset, count in [("per_mito",4,5059), ("per_group",6,161)]:
+        score = scores["compartment"]["embedding"][level]
+        assert sum(sum(row) for row in score["confusion"]) == count
+        values[2,offset] = score["balanced_accuracy"]
+        values[2,offset+1] = score["macro_f1"]
+    identities.append(dict(representation=NAMES[2]+" (Compartment)",run=str(path),
+        metrics=str(path/"metrics.json"),metrics_sha256=sha(path/"metrics.json"),
+        metadata_sha256=sha(path/"run.json"),tasks=["compartment"],
+        checkpoint=run["embedding"]["checkpoint"],embedding=run["embedding"]["representation"]))
+    previous = read(BASE/"reports/nohead_head_threeway_lr_20261115_01/sources.json")
+    old_values = np.array([[np.nan if v is None else v for v in row]
+                           for row in previous["raw_scores"]])
+    known = np.isfinite(old_values)
+    assert known.sum() == 20
+    np.testing.assert_array_equal(values[known], old_values[known])
+    assert np.isfinite(values).all()
     args.output.mkdir(parents=True, exist_ok=False)
     formatted = [[f"{v*100:.2f}%" if np.isfinite(v) else "N/A" for v in row] for row in values]
     with (args.output/"fish2_lr_threeway.csv").open("w",newline="",encoding="utf-8-sig") as f:
@@ -131,16 +156,16 @@ def main():
         cells=[f"**{v}**" if np.isfinite(values[i,j]) and values[i,j]==maxima[j] else v
                for j,v in enumerate(row)]
         lines.append("| "+name+" | "+" | ".join(cells)+" |")
-    lines += ["", "粗体为已完成正式结果中的最高值。N/A：未找到 Fused384D 同协议 Compartment 固定 LR 正式结果；未混用 RF 或其他划分。", "",
+    lines += ["", "粗体为三种表征正式固定 LR 结果中的最高值。Fused384D 的四项 Compartment 指标已按相同协议补齐，其他 20 项原始指标保持不变。", "",
               "No Projection Head 同时包含主 Covariance 系数校准（0.2 → 0.0004），CLS Covariance 保持 0.05。", "",
-              "来源（113，直接读取已有 metrics.json；没有重跑训练或评价）：", ""]
+              "来源（113，各指标直接读取对应正式 metrics.json；本次仅补跑 Fused384D Compartment 固定 LR）：", ""]
     lines += [f"- {identity['representation']}: "+chr(96)+identity["metrics"]+chr(96) for identity in identities]
     (args.output/"fish2_lr_threeway.md").write_text("\n".join(lines)+"\n")
     payload=dict(schema="fish2.threeway-summary.v1", columns=COLUMNS, representations=NAMES,
         raw_scores=[[float(v) if np.isfinite(v) else None for v in row] for row in values],
         units="fraction in raw_scores; percent with two decimals in CSV/Markdown",
         sources=identities, protocol_asset_sha256=runs[0]["asset_manifest_sha256"],
-        missing="Fused384D compartment fixed-LR not found in completed formal records",
+        missing=None, filled_metrics=4, unchanged_existing_metrics=20,
         no_fitting=True,no_encoder_inference=True,
         code_commit=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip())
     (args.output/"sources.json").write_text(json.dumps(payload,indent=2,ensure_ascii=False)+"\n")
@@ -149,7 +174,7 @@ def main():
         csv_rows=list(csv.reader(f))
     assert len(csv_rows)==4 and csv_rows[0]==["Representation"]+COLUMNS
     assert all(len(r)==9 for r in csv_rows)
-    assert csv_rows[3][5:]==["N/A"]*4
+    assert all(value.endswith("%") for row in csv_rows[1:] for value in row[1:])
     for i,row in enumerate(csv_rows[1:]):
         for j,s in enumerate(row[1:]):
             if s!="N/A":
