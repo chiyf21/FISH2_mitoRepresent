@@ -56,7 +56,10 @@ def plot(values, output):
                       label=labels[i], zorder=3)
         for j, (rect, value) in enumerate(zip(bars, heights)):
             if np.isfinite(value):
-                ax.text(rect.get_x()+rect.get_width()/2, value+1.3, f"{value:.2f}",
+                close = any(np.isfinite(values[k,j]) and abs(values[k,j]*100-value)<3
+                            for k in range(3) if k != i)
+                label_y = value+1.3+(3.0 if i == 1 and close else 0)
+                ax.text(rect.get_x()+rect.get_width()/2, label_y, f"{value:.2f}",
                         ha="center", va="bottom", fontsize=10,
                         weight="bold" if values[i,j] == best[j] else "normal")
             else:
