@@ -100,16 +100,32 @@ class MLPFusion(nn.Module):
         i=self.image_projection(self.image_norm(pair[...,384:]))
         return self.mlp(torch.cat((p,i),dim=-1))
 
+class LinearProjectionFusion(nn.Module):
+    """Normalize CLS readouts, concatenate, and project with one linear layer."""
+    def __init__(self):
+        super().__init__()
+        self.concat_norm = nn.LayerNorm(1152)
+        self.projection = nn.Linear(1152, 384)
+
+    def forward(self, point, image, layer):
+        point = F.layer_norm(point.float(), (384,))
+        image = image.float()
+        if layer != 12:  # Image L12 already passed the MAE's final LayerNorm in encode.
+            image = F.layer_norm(image, (768,))
+        pair = torch.cat((point, image), dim=-1)
+        return self.projection(self.concat_norm(pair))
+
+
 class System(nn.Module):
-    def __init__(self,point,image):
+    def __init__(self,point,image,linear_projection=False):
         super().__init__();self.point=point;self.image=image
         self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
         for m in [point,image]:m.requires_grad_(False)
         for block in point.blocks.blocks[-4:]:block.requires_grad_(True)
         self.preheads=nn.ModuleDict()
         self.loss=InBatchContrastiveLoss(.2)
-        self.balance=PairBalance()
-        self.fusion=MLPFusion()
+        self.balance=None if linear_projection else PairBalance()
+        self.fusion=LinearProjectionFusion() if linear_projection else MLPFusion()
         self.fusion.requires_grad_(False)
         self.point_nna=None;self.nna=None;self.phase='pretrain'
     def train(self,mode=True):
@@ -145,8 +161,11 @@ class System(nn.Module):
         if self.phase=='calibration':return p,i,{},{}
         fused={};stats={}
         for l in LAYERS:
-            pair,st=self.balance(p[l],i[l],l,self.training and loss)
-            fused[l]=self.fusion(pair.float());stats[str(l)]=st
+            if self.balance is None:
+                fused[l] = self.fusion(p[l], i[l], l)
+            else:
+                pair,st=self.balance(p[l],i[l],l,self.training and loss)
+                fused[l]=self.fusion(pair.float());stats[str(l)]=st
         if not loss:return p,i,fused,stats
         parts={};losses=[]
         for l in LAYERS:
@@ -244,7 +263,7 @@ def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,exp
         ix=np.concatenate([v['ids'] for v in gathered]);order=np.argsort(ix)
         feats={k:np.concatenate([v['features'][k] for v in gathered])[order] for k in result}
         metrics={k:cov_metrics(v) for k,v in feats.items()}
-        if phase=='refine':
+        if phase=='refine' and model.balance is not None:
             for l in LAYERS:
                 mp=getattr(model.balance,f'mu_p_{l}').cpu().numpy();mi=getattr(model.balance,f'mu_i_{l}').cpu().numpy();vp,vi=getattr(model.balance,f'v_{l}').cpu().numpy();target=(vp+vi)/2
                 p=feats[f'point_{l}'];i=feats[f'image_{l}'];pair=np.concatenate([mp+np.sqrt(target/vp)*(p-mp),mi+np.sqrt(target/vi)*(i-mi)],1)

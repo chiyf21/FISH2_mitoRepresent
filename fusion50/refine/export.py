@@ -24,10 +24,11 @@ def main():
     points = load_points(config, rows)
     device = torch.device("cuda:0")
     point, grouping, image = load_models(config, device)
-    model = core.System(point, image).to(device).eval()
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     if checkpoint["stage"] != "refine":
         raise ValueError("Use a fusion-stage checkpoint")
+    linear = checkpoint.get("config", {}).get("linear_projection", False)
+    model = core.System(point, image, linear_projection=linear).to(device).eval()
     model.load_state_dict(checkpoint["model"], strict=True)
     model.phase = "refine"
     args.output.mkdir(parents=True, exist_ok=False)
