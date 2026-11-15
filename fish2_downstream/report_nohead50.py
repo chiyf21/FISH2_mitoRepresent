@@ -9,6 +9,47 @@ from .common import TASKS, dump, read, sha, table
 from .evaluate import metrics
 
 
+
+def plot_comparison(result, output):
+    """Presentation only: plot the saved paired confusion counts without refitting."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    for task, config in TASKS.items():
+        path = output / f"comparison_{task}_confusion.png"
+        if path.exists():
+            raise FileExistsError(path)
+        fig, axes = plt.subplots(2, 2, figsize=(12, 12), layout="constrained")
+        for column, (name, title) in enumerate([
+                ("Fusion50", "Fusion50"),
+                ("NoHead50_calibrated", "No-Head50 + covariance calibration")]):
+            for row, level in enumerate(["per_mito", "per_group"]):
+                score = result[name][task]["embedding"][level]
+                counts = np.asarray(score["confusion"])
+                normalized = np.asarray(score["confusion_normalized"])
+                ax = axes[row, column]
+                ax.imshow(normalized, cmap="Blues", vmin=0, vmax=1)
+                for i in range(len(counts)):
+                    for j in range(len(counts)):
+                        ax.text(j, i, f"{counts[i,j]}\n{normalized[i,j]:.1%}",
+                                ha="center", va="center", fontsize=10 if len(counts)>2 else 16,
+                                color="white" if normalized[i,j]>.55 else "black")
+                ax.set_xticks(range(len(counts)), config["classes"])
+                ax.set_yticks(range(len(counts)), config["classes"])
+                ax.set_xlabel("Predicted class")
+                ax.set_ylabel("True class")
+                label = "Single mitochondrion" if row == 0 else (
+                    "Body aggregate" if task == "cell_type" else "True-compartment aggregate")
+                ax.set_title(f"{title}\n{label}: BA={score['balanced_accuracy']:.4f}, Macro-F1={score['macro_f1']:.4f}",
+                             fontsize=11)
+        aggregation = "Body-level aggregation" if task == "cell_type" else "Body x true-compartment aggregation (oracle)"
+        fig.suptitle(f"Fish2 Reviewed81 | {task} | fixed LR | body-disjoint five folds\n{aggregation}",
+                     fontsize=15)
+        fig.savefig(path, dpi=200, facecolor="white")
+        plt.close(fig)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline", type=Path, required=True)
@@ -68,6 +109,7 @@ def main():
             instance_map=run["embedding"]["instance_map"])
         for task in TASKS:
             shutil.copy2(paths[name]/task/"confusion.png", args.output/f"{name}_{task}_confusion.png")
+    plot_comparison(result, args.output)
     dump(args.output / "comparison.json", dict(identities=identities, differences=rows,
         full_metrics=result, export_validation=provenance,
         protocol_asset_sha256=reference["asset_manifest_sha256"],
@@ -116,7 +158,10 @@ def main():
                           "|---|"+"|".join(["---:"]*len(config["classes"]))+"|"]
                 lines += ["|"+label+"|"+"|".join(map(str, row))+"|" for label, row in zip(config["classes"], cm)]
                 lines += [""]
-    lines += ["各模型的归一化混淆矩阵图：", ""]
+    lines += ["配对混淆矩阵图（上：实例；下：聚合；左：Fusion50；右：No-Head）：", ""]
+    for task in TASKS:
+        lines.append(f"- [{task}](comparison_{task}_confusion.png)")
+    lines += ["", "各模型原始评价图：", ""]
     for name in paths:
         for task in TASKS:
             f = f"{name}_{task}_confusion.png"
