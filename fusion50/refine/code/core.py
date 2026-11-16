@@ -117,13 +117,16 @@ class LinearProjectionFusion(nn.Module):
 
 
 class System(nn.Module):
-    def __init__(self,point,image,linear_projection=False):
+    def __init__(self,point,image,linear_projection=False,disable_pair_balance=False):
+        if linear_projection and disable_pair_balance:
+            raise ValueError("Choose either the linear projection variant or the standard head without PairBalance")
         super().__init__();self.point=point;self.image=image
         self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
         for m in [point,image]:m.requires_grad_(False)
         for block in point.blocks.blocks[-4:]:block.requires_grad_(True)
         self.preheads=nn.ModuleDict()
         self.loss=InBatchContrastiveLoss(.2)
+        self.disable_pair_balance=disable_pair_balance
         self.balance=None if linear_projection else PairBalance()
         self.fusion=LinearProjectionFusion() if linear_projection else MLPFusion()
         self.fusion.requires_grad_(False)
@@ -163,6 +166,8 @@ class System(nn.Module):
         for l in LAYERS:
             if self.balance is None:
                 fused[l] = self.fusion(p[l], i[l], l)
+            elif self.disable_pair_balance:
+                fused[l] = self.fusion(torch.cat((p[l], i[l]), dim=-1).float())
             else:
                 pair,st=self.balance(p[l],i[l],l,self.training and loss)
                 fused[l]=self.fusion(pair.float());stats[str(l)]=st
@@ -263,7 +268,7 @@ def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,exp
         ix=np.concatenate([v['ids'] for v in gathered]);order=np.argsort(ix)
         feats={k:np.concatenate([v['features'][k] for v in gathered])[order] for k in result}
         metrics={k:cov_metrics(v) for k,v in feats.items()}
-        if phase=='refine' and model.balance is not None:
+        if phase=='refine' and model.balance is not None and not model.disable_pair_balance:
             for l in LAYERS:
                 mp=getattr(model.balance,f'mu_p_{l}').cpu().numpy();mi=getattr(model.balance,f'mu_i_{l}').cpu().numpy();vp,vi=getattr(model.balance,f'v_{l}').cpu().numpy();target=(vp+vi)/2
                 p=feats[f'point_{l}'];i=feats[f'image_{l}'];pair=np.concatenate([mp+np.sqrt(target/vp)*(p-mp),mi+np.sqrt(target/vi)*(i-mi)],1)

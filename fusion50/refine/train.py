@@ -90,17 +90,20 @@ def save_epoch(model,opt,phase,epoch,step,out,rank,world,device,cfg,smoke=False)
   latest=out/'last.new';os.link(path,latest);latest.replace(out/'last.pt')
  dist.barrier()
 
-def load_linear_origin(config, model, world):
+def load_e16_refine_origin(config, model, world):
  path=Path(config['baseline_run'])/'checkpoints/refine_epoch000.pt'
  origin=torch.load(path,map_location='cpu',mmap=True,weights_only=False)
  if (origin['stage'],origin['epoch'],origin['step'],origin['world_size'])!=('refine',0,2300,world):
   raise ValueError('Expected the original four-rank E16 refine epoch 0 checkpoint')
- state={key:value for key,value in origin['model'].items()
-        if not key.startswith(('fusion.','balance.'))}
- missing,unexpected=model.load_state_dict(state,strict=False)
- new_head={key for key in model.state_dict() if key.startswith('fusion.')}
- if set(missing)!=new_head or unexpected:
-  raise ValueError(f'Incompatible E16 initialization: missing={missing}, unexpected={unexpected}')
+ if config.get('linear_projection',False):
+  state={key:value for key,value in origin['model'].items()
+         if not key.startswith(('fusion.','balance.'))}
+  missing,unexpected=model.load_state_dict(state,strict=False)
+  new_head={key for key in model.state_dict() if key.startswith('fusion.')}
+  if set(missing)!=new_head or unexpected:
+   raise ValueError(f'Incompatible E16 initialization: missing={missing}, unexpected={unexpected}')
+ else:
+  model.load_state_dict(origin['model'],strict=True)
  return path,origin['step'],origin['rng_per_rank']
 
 
@@ -108,18 +111,22 @@ def main():
  ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--output',required=True);ap.add_argument('--smoke',action='store_true');ap.add_argument('--resume',action='store_true');ap.add_argument('--budget-seconds',type=float,default=float('inf'));args=ap.parse_args()
  cfg=json.loads(Path(args.config).read_text())
  linear=cfg.get('linear_projection',False)
- stop_epoch=cfg.get('refine_stop_epoch',5) if linear else 50
+ no_balance=cfg.get('disable_pair_balance',False)
+ if linear and no_balance:
+  raise ValueError('Select one matched E16 fusion variant')
+ matched=linear or no_balance
+ stop_epoch=cfg.get('refine_stop_epoch',5) if matched else 50
  if not isinstance(stop_epoch,int) or not 1<=stop_epoch<=50:
   raise ValueError('refine_stop_epoch must be an integer between 1 and 50')
  rank=int(os.environ['RANK']);local=int(os.environ['LOCAL_RANK']);world=int(os.environ['WORLD_SIZE'])
  out=Path(args.output).resolve()
- if linear:
+ if matched:
   if world!=4:
    raise ValueError('The matched E16 short run requires four GPU ranks')
   if out.is_relative_to(Path(cfg['baseline_run']).resolve()):
-   raise ValueError('Use a separate output directory for the linear projection run')
+   raise ValueError('Use a separate output directory for the matched refinement run')
  torch.cuda.set_device(local);device=torch.device('cuda',local)
- if linear:dist.init_process_group('nccl',timeout=timedelta(minutes=30))
+ if matched:dist.init_process_group('nccl',timeout=timedelta(minutes=30))
  else:dist.init_process_group('nccl')
  torch.set_num_threads(4);torch.backends.cuda.matmul.allow_tf32=True
  out.mkdir(parents=True,exist_ok=True);(out/'results').mkdir(exist_ok=True);core.ROOT=out
@@ -128,36 +135,41 @@ def main():
  seed=20261029;random.seed(seed);np.random.seed(seed);torch.manual_seed(seed);torch.cuda.manual_seed_all(seed)
  recs=records(cfg);tr=[i for i,r in enumerate(recs) if r['split']=='train'];va=[i for i,r in enumerate(recs) if r['split']=='val'];rng=np.random.default_rng(seed);nprobe=16 if args.smoke else 256;probe=sorted(rng.choice(tr,min(len(tr),nprobe),False).tolist()+rng.choice(va,min(len(va),nprobe),False).tolist())
  if (out/'last.pt').exists() and not args.resume:raise FileExistsError('Existing run requires --resume')
- if linear and args.resume and not (out/'last.pt').exists():
+ if matched and args.resume and not (out/'last.pt').exists():
   raise FileNotFoundError(out/'last.pt')
- if linear and not args.smoke:
+ if matched and not args.smoke:
   saved_probe=json.loads((Path(cfg['baseline_run'])/'monitor_ids.json').read_text())
   if saved_probe!=probe:raise ValueError('Fixed probe IDs differ from the original comparison')
  if rank==0:
-  write(out/'cohort.json',recs);write(out/'monitor_ids.json',probe);write(out/'status.json',dict(status='initializing',phase='refine' if linear else 'pretrain',epoch=0))
-  if linear:write(out/'config.resolved.json',cfg)
+  write(out/'cohort.json',recs);write(out/'monitor_ids.json',probe);write(out/'status.json',dict(status='initializing',phase='refine' if matched else 'pretrain',epoch=0))
+  if matched:write(out/'config.resolved.json',cfg)
  points=load_points(cfg,recs)
- point,grouping,image=load_models(cfg,device);model=core.System(point,image,linear_projection=linear).to(device)
+ point,grouping,image=load_models(cfg,device);model=core.System(point,image,linear_projection=linear,disable_pair_balance=no_balance).to(device)
  resume=torch.load(out/'last.pt',map_location='cpu',weights_only=False) if args.resume and (out/'last.pt').exists() else None
  origin_step,origin_rng=0,None
- if linear and resume is None:
-  origin_path,origin_step,origin_rng=load_linear_origin(cfg,model,world)
-  if rank==0:write(out/'initialization_check.json',dict(status='PASS',source=str(origin_path),sha256=sha(origin_path),step=origin_step,trained_head_loaded=False))
- elif linear:
-  if not resume['config'].get('linear_projection') or resume['world_size']!=world:
-   raise ValueError('Resume requires a matching linear projection checkpoint')
+ if matched and resume is None:
+  origin_path,origin_step,origin_rng=load_e16_refine_origin(cfg,model,world)
+  if rank==0:
+   write(out/'initialization_check.json',dict(status='PASS',source=str(origin_path),sha256=sha(origin_path),
+         step=origin_step,fusion_head_init='new_linear' if linear else 'original_mlp_epoch0',
+         disable_pair_balance=no_balance))
+ elif matched:
+  old=resume['config']
+  if (old.get('linear_projection',False)!=linear or old.get('disable_pair_balance',False)!=no_balance
+      or resume['world_size']!=world or resume['stage']!='refine'):
+   raise ValueError('Resume requires a checkpoint from the matching refinement variant')
  elif rank==0:
   write(out/'initialization_check.json',dict(status='PASS',point='surface Point-MAE, strict full-model load',point_path=cfg['point_checkpoint'],image=cfg['image_checkpoint'],old_point_nna_weights_loaded=False))
- if resume is None and not linear:
+ if resume is None and not matched:
   mean,std,_=base.estimate_point_cls_stats(point,grouping,[recs[j] for j in tr],points,device,64)
   with torch.no_grad():model.point_cls.copy_(mean[None,None]+.01*std[None,None]*torch.randn_like(model.point_cls))
  if len(tr)<world*2 or 64%world or 64//world<2:
   raise ValueError('Fusion50 requires a global batch of 64 and at least two instances per rank')
  sampler=DistributedSampler(tr,num_replicas=world,rank=rank,shuffle=True,seed=seed,drop_last=True)
  loader=DataLoader(tr,batch_size=64//world,sampler=sampler,drop_last=False,num_workers=0)
- if linear and len(loader)!=115:raise ValueError('The historical E16 run had 115 batches per epoch')
+ if matched and len(loader)!=115:raise ValueError('The historical E16 run had 115 batches per epoch')
  step=origin_step if resume is None else resume['step'];start_time=time.monotonic();deadline=start_time+args.budget_seconds
- phases=[('refine',50)] if linear else [('pretrain',20),('refine',50)]
+ phases=[('refine',50)] if matched else [('pretrain',20),('refine',50)]
  for phase,epochs in phases:
   if resume is not None and resume['stage']=='refine' and phase=='pretrain':continue
   continuing=resume is not None and resume['stage']==phase
@@ -168,7 +180,7 @@ def main():
   if continuing:
    model.load_state_dict(resume['model'],strict=True)
    if resume.get('rng_per_rank'):restore(resume['rng_per_rank'][rank],device)
-  elif linear:
+  elif matched:
    restore(origin_rng[rank],device)
   elif phase=='refine':
    model.phase='calibration';model.eval();core.monitor(model,recs,probe,points,grouping,device,rank,world,0,'calibration');dist.barrier()
@@ -189,7 +201,7 @@ def main():
   if not continuing:
    model.eval();core.monitor(model,recs,probe,points,grouping,device,rank,world,0,phase);save_epoch(model,opt,phase,0,step,out,rank,world,device,cfg,args.smoke)
   first=resume['epoch']+1 if continuing else 1;last_epoch_seconds=0.
-  final_epoch=stop_epoch if linear else epochs
+  final_epoch=stop_epoch if matched else epochs
   for epoch in range(first,final_epoch+1):
    stop=(out/'STOP_AFTER_EPOCH').exists() or time.monotonic()+max(last_epoch_seconds,60)+120>deadline
    flag=torch.tensor(int(stop),device=device);dist.all_reduce(flag,op=dist.ReduceOp.MAX)
