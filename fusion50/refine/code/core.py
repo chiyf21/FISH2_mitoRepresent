@@ -119,8 +119,8 @@ class LinearProjectionFusion(nn.Module):
 class System(nn.Module):
     def __init__(self,point,image,linear_projection=False,disable_pair_balance=False,
                  normalize_cls_regularizer=False):
-        if sum((linear_projection, disable_pair_balance, normalize_cls_regularizer)) > 1:
-            raise ValueError("Choose a single matched Fusion50 variant")
+        if linear_projection and (disable_pair_balance or normalize_cls_regularizer):
+            raise ValueError("The linear projection has its own CLS and fusion route")
         super().__init__();self.point=point;self.image=image
         self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
         for m in [point,image]:m.requires_grad_(False)

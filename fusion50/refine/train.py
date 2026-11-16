@@ -113,8 +113,8 @@ def main():
  linear=cfg.get('linear_projection',False)
  no_balance=cfg.get('disable_pair_balance',False)
  normalize_cls=cfg.get('normalize_cls_regularizer',False)
- if sum((linear,no_balance,normalize_cls))>1:
-  raise ValueError('Select one matched E16 fusion variant')
+ if linear and (no_balance or normalize_cls):
+  raise ValueError('The linear projection has its own CLS and fusion route')
  matched=linear or no_balance or normalize_cls
  stop_epoch=cfg.get('refine_stop_epoch',5) if matched else 50
  if not isinstance(stop_epoch,int) or not 1<=stop_epoch<=50:
