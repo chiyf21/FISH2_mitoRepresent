@@ -93,6 +93,9 @@ def main():
              'normalize_cls_regularizer', 'refine_stop_epoch', 'image_mlp'} & cfg.keys()
  if obsolete:
   raise ValueError(f'Legacy fusion settings: {sorted(obsolete)}')
+ use_balance = cfg.get('pair_balance', False)
+ if type(use_balance) is not bool:
+  raise ValueError('pair_balance must be a boolean')
  cls_epochs = cfg.get('point_cls_epochs', 20)
  fusion_epochs = cfg.get('fusion_epochs', 0)
  if type(cls_epochs) is not int or type(fusion_epochs) is not int or cls_epochs < 1 or fusion_epochs < 0:
@@ -124,7 +127,7 @@ def main():
   old = resume['config']
   fixed = ('source_run_id', 'point_run', 'point_checkpoint', 'image_checkpoint', 'point_cls_epochs', 'point_cls_init_checkpoint')
   if (resume['world_size'] != world or any(old.get(key) != cfg.get(key) for key in fixed)
-      or (resume['stage'] == 'refine' and old.get('fusion_epochs', 0) != fusion_epochs)):
+      or (resume['stage'] == 'refine' and (old.get('fusion_epochs', 0) != fusion_epochs or old.get('pair_balance', False) != use_balance))):
    raise ValueError('Resume requires the same inputs, stage schedule and number of ranks')
  if rank==0:
   write(out/'cohort.json',recs)
@@ -171,6 +174,18 @@ def main():
   else:
    model.point_nna=None;model.phase='refine';model.fusion.requires_grad_(True);model.image.cls_token.requires_grad_(True)
    for b in model.image.blocks[-4:]:b.requires_grad_(True)
+   if use_balance:
+    model.balance = nn.ModuleDict({str(l): core.PairBalance(point.trans_dim) for l in core.LAYERS}).to(device)
+    if not continuing:
+     # Reuse the fixed training portion of the canonical probe. No validation leakage.
+     train_probe = [index for index in probe if recs[index]['split'] == 'train']
+     core.monitor(model,recs,train_probe,points,grouping,device,rank,world,0,'calibration')
+     dist.barrier()
+     with np.load(out/'calibration_epoch00_probe.npz') as calibration:
+      for layer in core.LAYERS:
+       model.balance[str(layer)].calibrate(
+         torch.as_tensor(calibration[f'point_{layer}'], device=device),
+         torch.as_tensor(calibration[f'image_{layer}'], device=device))
   if continuing:
    model.load_state_dict(resume['model'],strict=True)
    if resume.get('rng_per_rank'):restore(resume['rng_per_rank'][rank],device)
@@ -197,13 +212,15 @@ def main():
     frac=(epoch-1)+(batchno-1)/len(loader);factor=min(1.,frac+1/len(loader))*(.5+.5*math.cos(math.pi*frac/epochs))
     for g in opt.param_groups:g['lr']=g['base_lr']*factor
     opt.zero_grad(set_to_none=True)
-    with torch.autocast('cuda',dtype=torch.bfloat16):loss,parts,_=ddp(inp,ids)
+    with torch.autocast('cuda',dtype=torch.bfloat16):loss,parts,balance_gains=ddp(inp,ids)
     if not torch.isfinite(loss):raise RuntimeError('Nonfinite loss')
     loss.backward();grad=torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad],1.)
     if not torch.isfinite(grad):raise RuntimeError('Nonfinite gradient')
     opt.step();step+=1;summ+=float(loss)*len(rr);count+=len(rr)
     if rank==0:
      record=dict(phase=phase,epoch=epoch,batch=batchno,batches_per_epoch=len(loader),optimizer_step=step,loss=float(loss),parts={k:float(v) for k,v in parts.items()},grad_norm=float(grad),elapsed_epoch_sec=time.monotonic()-beg,time=time.time())
+     if balance_gains:
+      record['balance_gains'] = {key: value.detach().tolist() for key, value in balance_gains.items()}
      append(out/'step_metrics.jsonl',record);write(out/'status.json',dict(status='training',**record))
     if args.smoke:
      check=dict(phase=phase,loss=float(loss),point_cls_grad=float(model.point_cls.grad.abs().sum()),point_last4_grad=float(sum(p.grad.abs().sum() for b in point.blocks.blocks[-4:] for p in b.parameters() if p.grad is not None)),image_cls_grad=0. if image.cls_token.grad is None else float(image.cls_token.grad.abs().sum()),image_last4_grad=float(sum(p.grad.abs().sum() for b in image.blocks[-4:] for p in b.parameters() if p.grad is not None)),prefix_grads_absent=all(p.grad is None for b in list(point.blocks.blocks[:8])+list(image.blocks[:8]) for p in b.parameters()))

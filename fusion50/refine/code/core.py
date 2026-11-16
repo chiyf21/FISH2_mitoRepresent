@@ -55,6 +55,47 @@ def prepare(rows,pointdata,point,grouping,image,device,epoch,training,point_only
     valid=torch.cat([torch.ones(len(valid),1,device=device,dtype=torch.bool),valid],1)
     return pt,pp,im,valid
 
+class PairBalance(nn.Module):
+    """Match total variance of two encoder-normalized CLS streams."""
+    def __init__(self, width):
+        super().__init__()
+        self.register_buffer('mean', torch.zeros(2, width))
+        self.register_buffer('variance', torch.ones(2))
+
+    @staticmethod
+    def moments(x, distributed):
+        total = x.sum(dim=1)
+        squared = x.square().sum(dim=(1, 2))
+        count = x.shape[1]
+        if distributed and dist.is_initialized() and dist.get_world_size() > 1:
+            from torch.distributed.nn.functional import all_reduce
+            sums = all_reduce(torch.cat((total, squared[:, None]), dim=1))
+            total, squared = sums[:, :-1], sums[:, -1]
+            count *= dist.get_world_size()
+        mean = total / count
+        return mean, (squared / count - mean.square().sum(1)).clamp_min(1e-8)
+
+    @torch.no_grad()
+    def calibrate(self, point, image):
+        mean, variance = self.moments(torch.stack((point.float(), image.float())), False)
+        self.mean.copy_(mean)
+        self.variance.copy_(variance)
+
+    def forward(self, point, image, update):
+        x = torch.stack((point.float(), image.float()))
+        if update:
+            mean, var = self.moments(x.flatten(1, -2), True)
+            with torch.no_grad():
+                self.mean.lerp_(mean.detach(), .05)
+                self.variance.lerp_(var.detach(), .05)
+        else:
+            mean, var = self.mean, self.variance
+        gain = torch.sqrt(var.mean() / var.clamp_min(1e-8))
+        centered = x - mean[:, None, None]
+        balanced = mean[:, None, None] + centered * gain[:, None, None, None]
+        return torch.cat(balanced.unbind(0), dim=-1), gain
+
+
 class System(nn.Module):
     def __init__(self, point, image):
         super().__init__()
@@ -72,6 +113,7 @@ class System(nn.Module):
                                     nn.Linear(384, 384), nn.LayerNorm(384))
         self.fusion.requires_grad_(False)
         self.point_nna = None
+        self.balance = None
         self.phase = 'pretrain'
 
     def train(self,mode=True):
@@ -112,7 +154,14 @@ class System(nn.Module):
             if not loss:return p,i,{},{}
             total, parts = self.point_nna(p, ids)
             return total, parts, {}
-        concat = {layer: torch.cat((p[layer], i[layer]), dim=-1) for layer in LAYERS}
+        stats = {}
+        if self.balance is None:
+            concat = {layer: torch.cat((p[layer], i[layer]), dim=-1) for layer in LAYERS}
+        else:
+            concat = {}
+            for layer in LAYERS:
+                concat[layer], stats[str(layer)] = self.balance[str(layer)](
+                    p[layer], i[layer], self.training and loss)
         fused = {layer: self.fusion(z) for layer, z in concat.items()}
         if not loss:
             return p, i, fused, concat
@@ -127,7 +176,7 @@ class System(nn.Module):
             terms.update({'image_'+k:v for k,v in image_terms.items()})
             terms=dict(terms,infonce=contrastive.detach(),**extra)
             for k,v in terms.items():parts[f'{l}/{k}']=v
-        return torch.stack(losses).mean(), parts, {}
+        return torch.stack(losses).mean(), parts, stats
 
 def vicreg(z):
     # Differentiable global-batch gather; pool both views as in the old VICReg implementation.
@@ -217,7 +266,12 @@ def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,exp
             for layer in LAYERS:
                 vp = metrics[f'point_{layer}']['total_variance']
                 vi = metrics[f'image_{layer}']['total_variance']
-                metrics[f'concat_{layer}']['point_variance_share'] = vp / (vp + vi) if vp + vi else None
+                metric = metrics[f'concat_{layer}']
+                metric['point_variance_share_before_balance'] = vp / (vp + vi) if vp + vi else None
+                if model.balance is not None:
+                    var = model.balance[str(layer)].variance.detach().cpu().double().numpy()
+                    vp, vi = np.array([vp, vi]) / var
+                metric['point_variance_share'] = float(vp / (vp + vi)) if vp + vi else None
         record=dict(phase=phase,epoch=epoch,time=time.time(),metrics=metrics,probe='fixed canonical input; no augmentation; point sample0 fixed FPS; same IDs every epoch')
         append(ROOT/'epoch_metrics.jsonl',record)
         np.savez(ROOT/f'{phase}_epoch{epoch:02d}_probe.npz',ids=ix[order],**feats)

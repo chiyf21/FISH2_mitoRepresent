@@ -32,6 +32,10 @@ def main():
             raise ValueError(f'Export config and checkpoint disagree on {key}')
     point, grouping, image = load_models(config, device)
     model = core.System(point, image).to(device).eval()
+    if saved.get('pair_balance', False):
+        model.balance = torch.nn.ModuleDict({
+            str(layer): core.PairBalance(point.trans_dim) for layer in core.LAYERS
+        }).to(device)
     model.load_state_dict(checkpoint["model"], strict=True)
     model.phase = "refine"
     args.output.mkdir(parents=True, exist_ok=False)
