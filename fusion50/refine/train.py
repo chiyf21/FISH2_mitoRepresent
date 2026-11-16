@@ -112,9 +112,10 @@ def main():
  cfg=json.loads(Path(args.config).read_text())
  linear=cfg.get('linear_projection',False)
  no_balance=cfg.get('disable_pair_balance',False)
- if linear and no_balance:
+ normalize_cls=cfg.get('normalize_cls_regularizer',False)
+ if sum((linear,no_balance,normalize_cls))>1:
   raise ValueError('Select one matched E16 fusion variant')
- matched=linear or no_balance
+ matched=linear or no_balance or normalize_cls
  stop_epoch=cfg.get('refine_stop_epoch',5) if matched else 50
  if not isinstance(stop_epoch,int) or not 1<=stop_epoch<=50:
   raise ValueError('refine_stop_epoch must be an integer between 1 and 50')
@@ -144,7 +145,8 @@ def main():
   write(out/'cohort.json',recs);write(out/'monitor_ids.json',probe);write(out/'status.json',dict(status='initializing',phase='refine' if matched else 'pretrain',epoch=0))
   if matched:write(out/'config.resolved.json',cfg)
  points=load_points(cfg,recs)
- point,grouping,image=load_models(cfg,device);model=core.System(point,image,linear_projection=linear,disable_pair_balance=no_balance).to(device)
+ point,grouping,image=load_models(cfg,device);model=core.System(point,image,linear_projection=linear,disable_pair_balance=no_balance,
+                 normalize_cls_regularizer=normalize_cls).to(device)
  resume=torch.load(out/'last.pt',map_location='cpu',weights_only=False) if args.resume and (out/'last.pt').exists() else None
  origin_step,origin_rng=0,None
  if matched and resume is None:
@@ -152,10 +154,11 @@ def main():
   if rank==0:
    write(out/'initialization_check.json',dict(status='PASS',source=str(origin_path),sha256=sha(origin_path),
          step=origin_step,fusion_head_init='new_linear' if linear else 'original_mlp_epoch0',
-         disable_pair_balance=no_balance))
+         disable_pair_balance=no_balance,normalize_cls_regularizer=normalize_cls))
  elif matched:
   old=resume['config']
   if (old.get('linear_projection',False)!=linear or old.get('disable_pair_balance',False)!=no_balance
+      or old.get('normalize_cls_regularizer',False)!=normalize_cls
       or resume['world_size']!=world or resume['stage']!='refine'):
    raise ValueError('Resume requires a checkpoint from the matching refinement variant')
  elif rank==0:

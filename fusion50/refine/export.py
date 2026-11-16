@@ -29,7 +29,8 @@ def main():
         raise ValueError("Use a fusion-stage checkpoint")
     saved = checkpoint.get("config", {})
     model = core.System(point, image, linear_projection=saved.get("linear_projection", False),
-                        disable_pair_balance=saved.get("disable_pair_balance", False)).to(device).eval()
+                        disable_pair_balance=saved.get("disable_pair_balance", False),
+                        normalize_cls_regularizer=saved.get("normalize_cls_regularizer", False)).to(device).eval()
     model.load_state_dict(checkpoint["model"], strict=True)
     model.phase = "refine"
     args.output.mkdir(parents=True, exist_ok=False)

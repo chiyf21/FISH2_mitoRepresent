@@ -117,9 +117,10 @@ class LinearProjectionFusion(nn.Module):
 
 
 class System(nn.Module):
-    def __init__(self,point,image,linear_projection=False,disable_pair_balance=False):
-        if linear_projection and disable_pair_balance:
-            raise ValueError("Choose either the linear projection variant or the standard head without PairBalance")
+    def __init__(self,point,image,linear_projection=False,disable_pair_balance=False,
+                 normalize_cls_regularizer=False):
+        if sum((linear_projection, disable_pair_balance, normalize_cls_regularizer)) > 1:
+            raise ValueError("Choose a single matched Fusion50 variant")
         super().__init__();self.point=point;self.image=image
         self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
         for m in [point,image]:m.requires_grad_(False)
@@ -127,6 +128,7 @@ class System(nn.Module):
         self.preheads=nn.ModuleDict()
         self.loss=InBatchContrastiveLoss(.2)
         self.disable_pair_balance=disable_pair_balance
+        self.normalize_cls_regularizer=normalize_cls_regularizer
         self.balance=None if linear_projection else PairBalance()
         self.fusion=LinearProjectionFusion() if linear_projection else MLPFusion()
         self.fusion.requires_grad_(False)
@@ -176,8 +178,13 @@ class System(nn.Module):
         for l in LAYERS:
             value, terms=vicreg(fused[l])
             contrastive, extra=filtered_infonce(fused[l],ids,topk=20,temperature=0.2)
-            point_reg, point_terms=cls_regularizer(p[l])
-            image_reg, image_terms=cls_regularizer(i[l])
+            point_cls, image_cls = p[l], i[l]
+            if self.normalize_cls_regularizer:
+                point_cls = self.fusion.point_norm(point_cls)
+                if l != 12:  # Image L12 is already after the native MAE final norm.
+                    image_cls = self.fusion.image_norm(image_cls)
+            point_reg, point_terms=cls_regularizer(point_cls)
+            image_reg, image_terms=cls_regularizer(image_cls)
             losses.append(value+contrastive+point_reg+image_reg)
             terms.update({'point_'+k:v for k,v in point_terms.items()})
             terms.update({'image_'+k:v for k,v in image_terms.items()})
