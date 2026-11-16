@@ -28,7 +28,10 @@ def main():
         raise ValueError('Expected the matched refine E5 checkpoint')
     config = checkpoint['config']
     balance = config.get('pair_balance', False)
-    points_config = dict(config, pointclouds=str(Path(config['point_run']) / 'data/pointclouds.npy'))
+    point_run = Path(config['point_run'])
+    point_settings = json.loads((point_run / 'config.resolved.json').read_text())
+    points_config = dict(config, pointclouds=str(point_run / 'data/pointclouds.npy'),
+                         spacing_xyz_nm=point_settings['spacing_xyz_nm'])
     target, groups, points, mapping = reviewed_inputs(points_config)
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / 'input_rows.json').write_text(json.dumps(mapping) + '\n')
