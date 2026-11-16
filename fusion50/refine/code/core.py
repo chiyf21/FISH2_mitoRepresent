@@ -89,15 +89,23 @@ class PairBalance(nn.Module):
         return torch.cat([mp+gp*(p.float()-mp),mi+gi*(i.float()-mi)],-1),torch.stack([vp,vi,gp,gi])
 
 class MLPFusion(nn.Module):
-    def __init__(self):
+    def __init__(self, image_mlp=False):
         super().__init__()
         self.point_norm=nn.LayerNorm(384,elementwise_affine=False)
         self.image_norm=nn.LayerNorm(768,elementwise_affine=False)
         self.image_projection=nn.Linear(768,384)
+        self.image_mlp = None
+        if image_mlp:
+            self.image_mlp = nn.Sequential(nn.Linear(384, 384), nn.GELU(), nn.Linear(384, 384))
+            # Preserve the original 768->384 image projection exactly at step zero.
+            nn.init.zeros_(self.image_mlp[-1].weight)
+            nn.init.zeros_(self.image_mlp[-1].bias)
         self.mlp=nn.Sequential(nn.LayerNorm(768),nn.Linear(768,384),nn.GELU(),nn.Linear(384,384),nn.LayerNorm(384))
     def forward(self,pair):
         p=self.point_norm(pair[...,:384])
         i=self.image_projection(self.image_norm(pair[...,384:]))
+        if self.image_mlp is not None:
+            i = i + self.image_mlp(i)
         return self.mlp(torch.cat((p,i),dim=-1))
 
 class LinearProjectionFusion(nn.Module):
@@ -118,8 +126,8 @@ class LinearProjectionFusion(nn.Module):
 
 class System(nn.Module):
     def __init__(self,point,image,linear_projection=False,disable_pair_balance=False,
-                 normalize_cls_regularizer=False):
-        if linear_projection and (disable_pair_balance or normalize_cls_regularizer):
+                 normalize_cls_regularizer=False, image_mlp=False):
+        if linear_projection and (disable_pair_balance or normalize_cls_regularizer or image_mlp):
             raise ValueError("The linear projection has its own CLS and fusion route")
         super().__init__();self.point=point;self.image=image
         self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
@@ -130,7 +138,7 @@ class System(nn.Module):
         self.disable_pair_balance=disable_pair_balance
         self.normalize_cls_regularizer=normalize_cls_regularizer
         self.balance=None if linear_projection else PairBalance()
-        self.fusion=LinearProjectionFusion() if linear_projection else MLPFusion()
+        self.fusion=LinearProjectionFusion() if linear_projection else MLPFusion(image_mlp=image_mlp)
         self.fusion.requires_grad_(False)
         self.point_nna=None;self.nna=None;self.phase='pretrain'
     def train(self,mode=True):
@@ -264,8 +272,22 @@ def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,exp
         for start in range(0,len(local),8):
             pos=local[start:start+8];rr=[recs[int(j)] for j in pos]
             inp=prepare(rr,points,model.point,grouping,model.image,device,0,False,point_only=model.phase=='pretrain')
-            with torch.autocast('cuda',dtype=torch.bfloat16):p,i,f,st=model(inp,views=1,loss=False)
-            for name,values in [('point',p),('image',i),('fused',f)]:
+            concat = []
+            fusion = model.fusion
+            head_input = (
+                fusion.mlp[0].register_forward_pre_hook(lambda _, args: concat.append(args[0]))
+                if model.phase == 'refine' and isinstance(fusion, MLPFusion)
+                and fusion.image_mlp is not None else None
+            )
+            try:
+                with torch.autocast('cuda', dtype=torch.bfloat16):
+                    p, i, f, st = model(inp, views=1, loss=False)
+            finally:
+                if head_input is not None:
+                    head_input.remove()
+            if head_input is not None:
+                assert len(concat) == len(LAYERS)
+            for name,values in [('point',p),('image',i),('fused',f),('concat768',dict(zip(LAYERS, concat)))]:
                 for l,x in values.items():result.setdefault(f'{name}_{l}',[]).append(x[:,0].float().cpu().numpy())
             seen.extend(pos)
     packed=dict(ids=seen,features={k:np.concatenate(v) for k,v in result.items()})
