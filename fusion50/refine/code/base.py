@@ -58,7 +58,7 @@ def view_transform(record, points, view, epoch, training, device):
             torch.as_tensor(mask, dtype=torch.uint8, device=device), xyz, seed)
 
 def estimate_point_cls_stats(point, grouping, records, points, device, limit=64):
-    total = torch.zeros(384, dtype=torch.float64, device=device)
+    total = torch.zeros(point.trans_dim, dtype=torch.float64, device=device)
     total_sq = torch.zeros_like(total)
     count = 0
     for record in records[:min(limit, len(records))]:

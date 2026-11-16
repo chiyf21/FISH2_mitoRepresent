@@ -1,7 +1,7 @@
-"""New Point-MAE -> point NNA20 -> reference VICReg reg1/5 CLS1/20 fusion50."""
+"""Train native 768D Point CLS, then optionally refine unbalanced 1536D fusion."""
 import os
 os.environ.setdefault('OMP_NUM_THREADS','4');os.environ.setdefault('OPENBLAS_NUM_THREADS','4')
-import argparse,hashlib,json,math,random,sys,time,fcntl
+import argparse,json,math,random,sys,time,fcntl
 from pathlib import Path
 from datetime import timedelta
 from types import SimpleNamespace
@@ -15,38 +15,17 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader,DistributedSampler
 import core,base,point_mae_adapter as adapter
 from instance_tokens import InstanceTokenEncoder
-from nna import Supervision,hashes
+from nna import Supervision
 
 def write(path,obj):
  path=Path(path);path.parent.mkdir(parents=True,exist_ok=True);tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(obj,indent=2,ensure_ascii=False));tmp.replace(path)
 def append(path,obj):
  with Path(path).open('a') as f:f.write(json.dumps(obj)+'\n')
-def sha(path):
- h=hashlib.sha256()
- with Path(path).open('rb') as f:
-  for b in iter(lambda:f.read(8*1024*1024),b''):h.update(b)
- return h.hexdigest()
 core.time=time;core.json=json;core.append=append;core.write=write
 def rng_state(device):return dict(python=random.getstate(),numpy=np.random.get_state(),torch=torch.get_rng_state(),cuda=torch.cuda.get_rng_state(device))
 def restore(s,device):
  random.setstate(s['python']);np.random.set_state(s['numpy']);torch.set_rng_state(s['torch'].cpu());torch.cuda.set_rng_state(s['cuda'].cpu(),device)
-class LegacyNNA(nn.Module):
- def __init__(self):
-  super().__init__();self.sup=Supervision(ROOT.parent/'vendor/mim_refiner',dict(layers=[9,10,11,12],queue_size=65536,topk=1,temperature=.2))
- def forward(self,features,ids):
-  mean,parts=self.sup(dict(zip(core.LAYERS,features)),ids);return mean*4,[parts[str(l)] for l in core.LAYERS]
-
 def records(config):
- if 'baseline_run' in config:
-  rows=json.loads((Path(config['baseline_run'])/'cohort.json').read_text())
-  counts={split:sum(row['split']==split for row in rows) for split in ('train','val','test')}
-  if len(rows)!=10678 or counts!={'train':7357,'val':1706,'test':1615}:
-   raise ValueError(f'Expected the original E16 cohort and split, got {counts}')
-  if [row['cohort_index'] for row in rows]!=list(range(len(rows))):
-   raise ValueError('E16 cohort order changed')
-  for row in rows:
-   row['spacing_xyz_nm']=config['spacing_xyz_nm']
-  return rows
  point_run=Path(config['point_run'])
  source=json.loads((point_run/'data/instances.json').read_text())
  split=json.loads((point_run/'split.json').read_text())
@@ -59,24 +38,39 @@ def records(config):
  keys=set()
  for j,row in enumerate(source):
   body=str(row['body_id'])
-  key=[str(row.get('source_run_id','dataset')),body,str(row.get('record_id') or row['instance_id'])]
-  if tuple(key) in keys:raise ValueError(f'Duplicate instance key: {key}')
-  keys.add(tuple(key))
+  source_id = row.get('source_run_id') or config.get('source_run_id')
+  if not source_id:
+   raise ValueError('Set source_run_id for old manifests without a source identifier')
+  record_id = row.get('record_id')
+  if not record_id:
+   instance = row['global_instance'] if 'global_instance' in row else row['instance_id']
+   instance = f'{int(instance):06d}' if str(instance).isdigit() else str(instance)
+   record_id = f'{source_id}__{body}__{instance}'
+  key=[str(source_id),body,str(record_id)]
+  if record_id in keys:raise ValueError(f'Duplicate record_id: {record_id}')
+  keys.add(record_id)
   rows.append(dict(cohort_index=j,key=key,body_id=body,point_row=j,em_path=row['em_path'],mask_path=row['mask_path'],normalization_radius_voxels=float(row['normalization_radius_voxels']),spacing_xyz_nm=spacing,split=assign[j]))
  if not rows:raise ValueError('No instances')
  return rows
 
 def load_points(config,rows):
- path=Path(config['pointclouds']) if 'baseline_run' in config else Path(config['point_run'])/'data/pointclouds.npy'
+ path=Path(config['point_run'])/'data/pointclouds.npy'
  points=np.load(path,mmap_mode='r',allow_pickle=False)
  if points.shape!=(len(rows),2,2048,3):
   raise ValueError(f'Invalid point cache shape: {points.shape}')
  return points
 
 def load_models(config,device):
- args=SimpleNamespace(group_size=32,num_group=64,mask_ratio=.7,trans_dim=384,encoder_dims=384,depth=12,drop_path=.1,heads=6,decoder_depth=4,decoder_heads=6)
- full=adapter.build_model(ROOT.parent/'vendor/point_mae',args,torch.device('cpu'))
- ck=torch.load(config['point_checkpoint'],map_location='cpu',weights_only=False);full.load_state_dict(ck['model'],strict=True)
+ ck = torch.load(config['point_checkpoint'], map_location='cpu', mmap=True, weights_only=False)
+ settings = ck['config']['mae']
+ width = settings['trans_dim']
+ if ck['stage'] != 'mae' or width != 768:
+  raise ValueError('Use a native 768D Point-MAE reconstruction checkpoint')
+ args = SimpleNamespace(group_size=32, num_group=64, mask_ratio=settings['mask_ratio'],
+                        trans_dim=width, encoder_dims=width, depth=12, drop_path=.1,
+                        heads=settings['heads'], decoder_depth=4, decoder_heads=settings['decoder_heads'])
+ full = adapter.build_model(ROOT.parent/'vendor/point_mae', args, torch.device('cpu'))
+ full.load_state_dict(ck['model'], strict=True)
  point=full.MAE_encoder.to(device).eval().requires_grad_(False);grouping=full.group_divider.to(device).eval();del full,ck
  image=InstanceTokenEncoder.from_checkpoint(config['image_checkpoint'],ROOT.parent/'image',max_tokens=2048).to(device).eval().requires_grad_(False)
  return point,grouping,image
@@ -90,45 +84,21 @@ def save_epoch(model,opt,phase,epoch,step,out,rank,world,device,cfg,smoke=False)
   latest=out/'last.new';os.link(path,latest);latest.replace(out/'last.pt')
  dist.barrier()
 
-def load_e16_refine_origin(config, model, world):
- path=Path(config['baseline_run'])/'checkpoints/refine_epoch000.pt'
- origin=torch.load(path,map_location='cpu',mmap=True,weights_only=False)
- if (origin['stage'],origin['epoch'],origin['step'],origin['world_size'])!=('refine',0,2300,world):
-  raise ValueError('Expected the original four-rank E16 refine epoch 0 checkpoint')
- if config.get('linear_projection',False):
-  state={key:value for key,value in origin['model'].items()
-         if not key.startswith(('fusion.','balance.'))}
-  missing,unexpected=model.load_state_dict(state,strict=False)
-  new_head={key for key in model.state_dict() if key.startswith('fusion.')}
-  if set(missing)!=new_head or unexpected:
-   raise ValueError(f'Incompatible E16 initialization: missing={missing}, unexpected={unexpected}')
- else:
-  model.load_state_dict(origin['model'],strict=True)
- return path,origin['step'],origin['rng_per_rank']
-
-
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--output',required=True);ap.add_argument('--smoke',action='store_true');ap.add_argument('--resume',action='store_true');ap.add_argument('--budget-seconds',type=float,default=float('inf'));args=ap.parse_args()
  cfg=json.loads(Path(args.config).read_text())
- linear=cfg.get('linear_projection',False)
- no_balance=cfg.get('disable_pair_balance',False)
- normalize_cls=cfg.get('normalize_cls_regularizer',False)
- if linear and (no_balance or normalize_cls):
-  raise ValueError('The linear projection has its own CLS and fusion route')
- matched=linear or no_balance or normalize_cls
- stop_epoch=cfg.get('refine_stop_epoch',5) if matched else 50
- if not isinstance(stop_epoch,int) or not 1<=stop_epoch<=50:
-  raise ValueError('refine_stop_epoch must be an integer between 1 and 50')
+ obsolete = {'baseline_run', 'linear_projection', 'disable_pair_balance',
+             'normalize_cls_regularizer', 'refine_stop_epoch', 'image_mlp'} & cfg.keys()
+ if obsolete:
+  raise ValueError(f'Legacy fusion settings: {sorted(obsolete)}')
+ cls_epochs = cfg.get('point_cls_epochs', 20)
+ fusion_epochs = cfg.get('fusion_epochs', 0)
+ if type(cls_epochs) is not int or type(fusion_epochs) is not int or cls_epochs < 1 or fusion_epochs < 0:
+  raise ValueError('Expected point_cls_epochs >= 1 and fusion_epochs >= 0')
  rank=int(os.environ['RANK']);local=int(os.environ['LOCAL_RANK']);world=int(os.environ['WORLD_SIZE'])
  out=Path(args.output).resolve()
- if matched:
-  if world!=4:
-   raise ValueError('The matched E16 short run requires four GPU ranks')
-  if out.is_relative_to(Path(cfg['baseline_run']).resolve()):
-   raise ValueError('Use a separate output directory for the matched refinement run')
  torch.cuda.set_device(local);device=torch.device('cuda',local)
- if matched:dist.init_process_group('nccl',timeout=timedelta(minutes=30))
- else:dist.init_process_group('nccl')
+ dist.init_process_group('nccl',timeout=timedelta(minutes=30))
  torch.set_num_threads(4);torch.backends.cuda.matmul.allow_tf32=True
  out.mkdir(parents=True,exist_ok=True);(out/'results').mkdir(exist_ok=True);core.ROOT=out
  lock=None
@@ -136,66 +106,49 @@ def main():
  seed=20261029;random.seed(seed);np.random.seed(seed);torch.manual_seed(seed);torch.cuda.manual_seed_all(seed)
  recs=records(cfg);tr=[i for i,r in enumerate(recs) if r['split']=='train'];va=[i for i,r in enumerate(recs) if r['split']=='val'];rng=np.random.default_rng(seed);nprobe=16 if args.smoke else 256;probe=sorted(rng.choice(tr,min(len(tr),nprobe),False).tolist()+rng.choice(va,min(len(va),nprobe),False).tolist())
  if (out/'last.pt').exists() and not args.resume:raise FileExistsError('Existing run requires --resume')
- if matched and args.resume and not (out/'last.pt').exists():
-  raise FileNotFoundError(out/'last.pt')
- if matched and not args.smoke:
-  saved_probe=json.loads((Path(cfg['baseline_run'])/'monitor_ids.json').read_text())
-  if saved_probe!=probe:raise ValueError('Fixed probe IDs differ from the original comparison')
+ last = out/'last.pt'
+ if args.resume and not last.is_file():
+  raise FileNotFoundError(last)
+ resume = torch.load(last, map_location='cpu', mmap=True, weights_only=False) if args.resume else None
+ if resume is not None:
+  old = resume['config']
+  fixed = ('source_run_id', 'point_run', 'point_checkpoint', 'image_checkpoint', 'point_cls_epochs')
+  if (resume['world_size'] != world or any(old.get(key) != cfg.get(key) for key in fixed)
+      or (resume['stage'] == 'refine' and old.get('fusion_epochs', 0) != fusion_epochs)):
+   raise ValueError('Resume requires the same inputs, stage schedule and number of ranks')
  if rank==0:
-  write(out/'cohort.json',recs);write(out/'monitor_ids.json',probe);write(out/'status.json',dict(status='initializing',phase='refine' if matched else 'pretrain',epoch=0))
-  if matched:write(out/'config.resolved.json',cfg)
+  write(out/'cohort.json',recs)
+  write(out/'monitor_ids.json',probe)
+  write(out/'config.resolved.json',cfg)
+  (out/'complete.json').unlink(missing_ok=True)
+  write(out/'status.json',dict(status='initializing',phase=resume['stage'] if resume else 'pretrain',epoch=0))
  points=load_points(cfg,recs)
- point,grouping,image=load_models(cfg,device);model=core.System(point,image,linear_projection=linear,disable_pair_balance=no_balance,
-                 normalize_cls_regularizer=normalize_cls).to(device)
- resume=torch.load(out/'last.pt',map_location='cpu',weights_only=False) if args.resume and (out/'last.pt').exists() else None
- origin_step,origin_rng=0,None
- if matched and resume is None:
-  origin_path,origin_step,origin_rng=load_e16_refine_origin(cfg,model,world)
-  if rank==0:
-   write(out/'initialization_check.json',dict(status='PASS',source=str(origin_path),sha256=sha(origin_path),
-         step=origin_step,fusion_head_init='new_linear' if linear else 'original_mlp_epoch0',
-         disable_pair_balance=no_balance,normalize_cls_regularizer=normalize_cls))
- elif matched:
-  old=resume['config']
-  if (old.get('linear_projection',False)!=linear or old.get('disable_pair_balance',False)!=no_balance
-      or old.get('normalize_cls_regularizer',False)!=normalize_cls
-      or resume['world_size']!=world or resume['stage']!='refine'):
-   raise ValueError('Resume requires a checkpoint from the matching refinement variant')
- elif rank==0:
-  write(out/'initialization_check.json',dict(status='PASS',point='surface Point-MAE, strict full-model load',point_path=cfg['point_checkpoint'],image=cfg['image_checkpoint'],old_point_nna_weights_loaded=False))
- if resume is None and not matched:
-  mean,std,_=base.estimate_point_cls_stats(point,grouping,[recs[j] for j in tr],points,device,64)
-  with torch.no_grad():model.point_cls.copy_(mean[None,None]+.01*std[None,None]*torch.randn_like(model.point_cls))
+ point,grouping,image=load_models(cfg,device)
+ model=core.System(point,image).to(device)
+ if resume is None:
+  with torch.no_grad():
+   mean,std,_=base.estimate_point_cls_stats(point,grouping,[recs[j] for j in tr],points,device,64)
+   model.point_cls.copy_(mean[None,None]+.01*std[None,None]*torch.randn_like(model.point_cls))
  if len(tr)<world*2 or 64%world or 64//world<2:
   raise ValueError('Fusion50 requires a global batch of 64 and at least two instances per rank')
  sampler=DistributedSampler(tr,num_replicas=world,rank=rank,shuffle=True,seed=seed,drop_last=True)
  loader=DataLoader(tr,batch_size=64//world,sampler=sampler,drop_last=False,num_workers=0)
- if matched and len(loader)!=115:raise ValueError('The historical E16 run had 115 batches per epoch')
- step=origin_step if resume is None else resume['step'];start_time=time.monotonic();deadline=start_time+args.budget_seconds
- phases=[('refine',50)] if matched else [('pretrain',20),('refine',50)]
+ step=0 if resume is None else resume['step'];start_time=time.monotonic();deadline=start_time+args.budget_seconds
+ phases=[('pretrain', cls_epochs), ('refine', fusion_epochs)]
  for phase,epochs in phases:
+  if not epochs:continue
   if resume is not None and resume['stage']=='refine' and phase=='pretrain':continue
   continuing=resume is not None and resume['stage']==phase
-  if phase=='pretrain':model.point_nna=LegacyNNA().to(device);model.phase='pretrain'
+  if phase=='pretrain':
+   model.point_nna=Supervision(ROOT.parent/'vendor/mim_refiner',
+      dict(layers=core.LAYERS,input_dim=point.trans_dim,queue_size=65536,topk=1,temperature=.2)).to(device)
+   model.phase='pretrain'
   else:
    model.point_nna=None;model.phase='refine';model.fusion.requires_grad_(True);model.image.cls_token.requires_grad_(True)
    for b in model.image.blocks[-4:]:b.requires_grad_(True)
   if continuing:
    model.load_state_dict(resume['model'],strict=True)
    if resume.get('rng_per_rank'):restore(resume['rng_per_rank'][rank],device)
-  elif matched:
-   restore(origin_rng[rank],device)
-  elif phase=='refine':
-   model.phase='calibration';model.eval();core.monitor(model,recs,probe,points,grouping,device,rank,world,0,'calibration');dist.barrier()
-   data=np.load(out/'calibration_epoch00_probe.npz');keep=np.isin(data['ids'],tr)
-   with torch.no_grad():
-    for l in core.LAYERS:
-     values=[]
-     for mod in ('point','image'):
-      x=np.asarray(data[f'{mod}_{l}'][keep],np.float64);mu=x.mean(0);v=np.mean(np.sum((x-mu)**2,axis=1));getattr(model.balance,f'mu_{"p" if mod=="point" else "i"}_{l}').copy_(torch.tensor(mu,device=device,dtype=torch.float32));values.append(v)
-     getattr(model.balance,f'v_{l}').copy_(torch.tensor(values,device=device,dtype=torch.float32))
-    model.balance.updates.fill_(1)
-   model.phase='refine'
   enc=[p for b in list(point.blocks.blocks[-4:])+(list(image.blocks[-4:]) if phase=='refine' else []) for p in b.parameters()]
   cls=[model.point_cls]+([image.cls_token] if phase=='refine' else []);heads=list(model.point_nna.parameters()) if phase=='pretrain' else list(model.fusion.parameters())
   opt=torch.optim.AdamW([dict(params=enc,lr=1e-5,base_lr=1e-5),dict(params=cls+heads,lr=2e-4,base_lr=2e-4)],weight_decay=1e-4,betas=(.9,.95))
@@ -204,7 +157,7 @@ def main():
   if not continuing:
    model.eval();core.monitor(model,recs,probe,points,grouping,device,rank,world,0,phase);save_epoch(model,opt,phase,0,step,out,rank,world,device,cfg,args.smoke)
   first=resume['epoch']+1 if continuing else 1;last_epoch_seconds=0.
-  final_epoch=stop_epoch if matched else epochs
+  final_epoch=epochs
   for epoch in range(first,final_epoch+1):
    stop=(out/'STOP_AFTER_EPOCH').exists() or time.monotonic()+max(last_epoch_seconds,60)+120>deadline
    flag=torch.tensor(int(stop),device=device);dist.all_reduce(flag,op=dist.ReduceOp.MAX)
@@ -219,21 +172,20 @@ def main():
     frac=(epoch-1)+(batchno-1)/len(loader);factor=min(1.,frac+1/len(loader))*(.5+.5*math.cos(math.pi*frac/epochs))
     for g in opt.param_groups:g['lr']=g['base_lr']*factor
     opt.zero_grad(set_to_none=True)
-    with torch.autocast('cuda',dtype=torch.bfloat16):loss,parts,stats=ddp(inp,ids)
+    with torch.autocast('cuda',dtype=torch.bfloat16):loss,parts,_=ddp(inp,ids)
     if not torch.isfinite(loss):raise RuntimeError('Nonfinite loss')
     loss.backward();grad=torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad],1.)
     if not torch.isfinite(grad):raise RuntimeError('Nonfinite gradient')
     opt.step();step+=1;summ+=float(loss)*len(rr);count+=len(rr)
     if rank==0:
      record=dict(phase=phase,epoch=epoch,batch=batchno,batches_per_epoch=len(loader),optimizer_step=step,loss=float(loss),parts={k:float(v) for k,v in parts.items()},grad_norm=float(grad),elapsed_epoch_sec=time.monotonic()-beg,time=time.time())
-     if stats:record['balance']={k:dict(point_variance=float(s[0]),image_variance=float(s[1]),point_gain=float(s[2]),image_gain=float(s[3])) for k,s in stats.items()}
      append(out/'step_metrics.jsonl',record);write(out/'status.json',dict(status='training',**record))
     if args.smoke:
      check=dict(phase=phase,loss=float(loss),point_cls_grad=float(model.point_cls.grad.abs().sum()),point_last4_grad=float(sum(p.grad.abs().sum() for b in point.blocks.blocks[-4:] for p in b.parameters() if p.grad is not None)),image_cls_grad=0. if image.cls_token.grad is None else float(image.cls_token.grad.abs().sum()),image_last4_grad=float(sum(p.grad.abs().sum() for b in image.blocks[-4:] for p in b.parameters() if p.grad is not None)),prefix_grads_absent=all(p.grad is None for b in list(point.blocks.blocks[:8])+list(image.blocks[:8]) for p in b.parameters()))
      assert check['prefix_grads_absent'] and check['point_cls_grad']>0 and check['point_last4_grad']>0
      if phase=='refine':assert check['image_cls_grad']>0 and check['image_last4_grad']>0
-     if linear:
-      check['projection_grad']=float(model.fusion.projection.weight.grad.abs().sum())
+     if phase=='refine':
+      check['projection_grad']=float(model.fusion[0].weight.grad.abs().sum())
       assert check['projection_grad']>0
      if rank==0:write(out/f'{phase}_smoke.json',check)
      if batchno==2:break
@@ -243,6 +195,6 @@ def main():
    dist.barrier()
    if args.smoke:break
   del ddp,opt;dist.barrier();resume=None
- if rank==0:write(out/'complete.json',dict(status='smoke_passed' if args.smoke else 'training_complete',steps=step,time=time.time()))
+ if rank==0:write(out/'complete.json',dict(status='smoke_passed' if args.smoke else 'training_complete',stage=phase,steps=step,time=time.time()))
  dist.barrier();dist.destroy_process_group()
 if __name__=='__main__':main()

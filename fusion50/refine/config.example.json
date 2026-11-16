@@ -1,5 +1,8 @@
 {
+  "source_run_id": "your-cache-source-id",
   "point_run": "/path/to/point-run",
   "point_checkpoint": "/path/to/point-run/mae/epoch_100.pt",
-  "image_checkpoint": "/path/to/image-run/checkpoint-119.pth"
+  "image_checkpoint": "/path/to/image-run/checkpoint-119.pth",
+  "point_cls_epochs": 20,
+  "fusion_epochs": 0
 }

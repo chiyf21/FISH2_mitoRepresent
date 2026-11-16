@@ -1,4 +1,4 @@
-"""Export 384-dimensional L12 Fusion50 vectors in manifest order."""
+"""Export L12 Point, Image, Concat1536 and Project384 in manifest order."""
 import argparse
 import csv
 import json
@@ -23,37 +23,43 @@ def main():
     rows = records(config)
     points = load_points(config, rows)
     device = torch.device("cuda:0")
-    point, grouping, image = load_models(config, device)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     if checkpoint["stage"] != "refine":
         raise ValueError("Use a fusion-stage checkpoint")
-    saved = checkpoint.get("config", {})
-    model = core.System(point, image, linear_projection=saved.get("linear_projection", False),
-                        disable_pair_balance=saved.get("disable_pair_balance", False),
-                        normalize_cls_regularizer=saved.get("normalize_cls_regularizer", False)).to(device).eval()
+    saved = checkpoint['config']
+    for key in ('point_run', 'point_checkpoint', 'image_checkpoint'):
+        if config[key] != saved[key]:
+            raise ValueError(f'Export config and checkpoint disagree on {key}')
+    point, grouping, image = load_models(config, device)
+    model = core.System(point, image).to(device).eval()
     model.load_state_dict(checkpoint["model"], strict=True)
     model.phase = "refine"
     args.output.mkdir(parents=True, exist_ok=False)
-    temporary = args.output / "fused_12.partial.npy"
-    result = np.lib.format.open_memmap(temporary, mode="w+", dtype="float32",
-                                      shape=(len(rows), 384))
+    dimensions = {'point': 768, 'image': 768, 'concat': 1536, 'fused': 384}
+    results = {name: np.lib.format.open_memmap(
+        args.output / f'{name}_12.partial.npy', mode='w+', dtype='float32',
+        shape=(len(rows), dim)) for name, dim in dimensions.items()}
     with torch.inference_mode():
         for start in range(0, len(rows), args.batch_size):
             batch = rows[start:start + args.batch_size]
             inputs = core.prepare(batch, points, point, grouping, image, device, 0, False)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                _, _, fused, _ = model(inputs, views=1, loss=False)
-            vectors = fused[12][:, 0].float().cpu().numpy()
-            if not np.isfinite(vectors).all():
-                raise FloatingPointError(f"Nonfinite embeddings at row {start}")
-            result[start:start + len(batch)] = vectors
-    result.flush()
+                point_cls, image_cls, fused, concat = model(inputs, views=1, loss=False)
+            for name, by_layer in zip(dimensions, (point_cls, image_cls, concat, fused)):
+                vectors = by_layer[12][:, 0].float().cpu().numpy()
+                if not np.isfinite(vectors).all():
+                    raise FloatingPointError(f'Nonfinite {name} embeddings at row {start}')
+                results[name][start:start + len(batch)] = vectors
+    for result in results.values():
+        result.flush()
+    results.clear()
     del result
     with (args.output / "instance_map.csv").open("w", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow(["embedding_row", "source_run_id", "body_id", "record_id", "split"])
         writer.writerows((i, *r["key"], r["split"]) for i, r in enumerate(rows))
-    temporary.rename(args.output / "fused_12.npy")
+    for name in dimensions:
+        (args.output / f'{name}_12.partial.npy').rename(args.output / f'{name}_12.npy')
 
 
 if __name__ == "__main__":

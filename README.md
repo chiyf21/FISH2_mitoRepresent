@@ -1,15 +1,14 @@
 # Fusion50 mitochondrial representation learning
 
-Fusion50 trains two masked autoencoders separately, applies 20 epochs of point-only nearest-neighbor alignment (NNA), then trains the two encoders and a shared fusion head for 50 epochs. The standard output is the 384-dimensional L12 embedding.
+This branch implements native 768D Point and Image CLS readouts. Historical
+384D Fusion50 remains available on its original branch.
 
-| Stage | Entry point | Model |
-| --- | --- | --- |
-| Surface points | `fusion50/point/train_ddp.py` | Point-MAE, 2,048 surface points, 64 groups, 70% masking, 384-dimensional encoder |
-| EM image | `fusion50/image/main_pretrain.py` | FOCUS3D, 32×128×128 ZYX crops, 2×8×8 patches, 50% masking, 768-dimensional encoder |
-| NNA and fusion | `fusion50/refine/train.py` | Point CLS and last four blocks for NNA, then both CLS tokens, both encoders' last four blocks and a shared MLP |
-| Embeddings | `fusion50/refine/export.py` | Canonical L12 fused vectors plus an instance map |
-
-Fusion uses the original per-layer CLS readouts at L9–L12, modality variance balancing, LayerNorm, image projection and concatenation before the MLP. The objective combines VICReg, filtered InfoNCE and modality CLS regularizers. Positive pairs are two views of the same instance. The 20 nearest other instances are excluded from the negatives for each anchor when the batch permits.
+Block 9-11 use parameter-free LayerNorm on the exported CLS. Block 12 takes the
+native final LayerNorm output. Fusion directly concatenates both 768D CLS without
+a modality projection, PairBalance, or input LayerNorm. The Project384 head retains
+its output LayerNorm. Point-only NNA is unchanged apart from its normalized
+768D input. Fusion uses VICReg and filtered InfoNCE on Project384, plus variance
+and covariance regularizers on the normalized per-modality CLS.
 
 ## Run
 
@@ -21,7 +20,7 @@ The input manifest is JSON, either a list or an object with a `records` list. Ea
 python fusion50/prepare.py --manifest /data/instances.json --output "$RUN/cache" --image-blocks
 ```
 
-Copy `fusion50/point/config.example.json` to `$RUN/point.json`. Set `input.path` to the cache, `output` to `$RUN/point` and `spacing_xyz_nm` to the data spacing (8,8,8 for LC21). Both MAEs can train in parallel.
+Copy `fusion50/point/config.example.json` to `$RUN/point.json`. Set `input.path` to the cache, `output` to `$RUN/point` and `spacing_xyz_nm` to the data spacing (8,8,8 for LC21). Set mae.trans_dim=768, mae.heads=12 and mae.decoder_heads=12 for this refine model.
 
 ```sh
 python fusion50/point/pipeline.py --config "$RUN/point.json" --prepare-only
@@ -36,15 +35,18 @@ CUDA_VISIBLE_DEVICES=2,3,4,5 torchrun --standalone --nproc_per_node=4 \
 
 The defaults represent the historical 100-epoch Point-MAE and 120-epoch image checkpoint. Choose an image epoch budget using measured throughput if needed. FOCUS3D batch size is per GPU. Point-MAE batch size is global. A previously prepared FOCUS3D block manifest can also be passed directly to `--data_path`; use its actual axis order.
 
-Copy `fusion50/refine/config.example.json` to `$RUN/refine.json` and set the point-run directory and both MAE checkpoint paths. The refine trainer runs NNA then fusion. It uses a global batch of 64 for the historical 4-GPU configuration and shares the point run's body split.
+Copy `fusion50/refine/config.example.json` to `$RUN/refine.json` and set the point-run directory and both MAE checkpoint paths. Set source_run_id to the recorded source for a legacy manifest lacking this field.
+The example stops after 20 Point-only NNA epochs. To start fusion, set fusion_epochs
+and rerun with --resume, the same output directory and the same number of ranks.
+The trainer uses global batch 64 and the original Point body split.
 
 ```sh
 CUDA_VISIBLE_DEVICES=2,3,4,5 torchrun --standalone --nproc_per_node=4 \
   fusion50/refine/train.py --config "$RUN/refine.json" --output "$RUN/refine"
 
 CUDA_VISIBLE_DEVICES=2 python fusion50/refine/export.py \
-  --config "$RUN/refine.json" --checkpoint "$RUN/refine/checkpoints/refine_epoch050.pt" \
+  --config "$RUN/refine.json" --checkpoint "$RUN/refine/last.pt" \
   --output "$RUN/embeddings"
 ```
 
-Export creates `fused_12.npy` and `instance_map.csv` in the same row order. Input data, run outputs and weights stay outside the checkout. Load only trusted checkpoints. [Source provenance](SOURCE_MAP.md).
+Export creates `point_12.npy`, `image_12.npy`, `concat_12.npy`, `fused_12.npy` and `instance_map.csv` in the same row order. Input data, run outputs and weights stay outside the checkout. Load only trusted checkpoints. [Source provenance](SOURCE_MAP.md).

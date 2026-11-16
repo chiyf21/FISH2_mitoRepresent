@@ -6,7 +6,6 @@ import torch.distributed as dist
 from torch.utils.checkpoint import checkpoint
 from torch.nn.utils.rnn import pad_sequence
 import base
-from mim_nna import InBatchContrastiveLoss
 LAYERS=(9,10,11,12)
 SEED=20261029
 def prepare(rows,pointdata,point,grouping,image,device,epoch,training,point_only=False):
@@ -56,83 +55,25 @@ def prepare(rows,pointdata,point,grouping,image,device,epoch,training,point_only
     valid=torch.cat([torch.ones(len(valid),1,device=device,dtype=torch.bool),valid],1)
     return pt,pp,im,valid
 
-class PairBalance(nn.Module):
-    def __init__(self):
-        super().__init__()
-        for layer in LAYERS:
-            self.register_buffer(f'mu_p_{layer}',torch.zeros(384))
-            self.register_buffer(f'mu_i_{layer}',torch.zeros(768))
-            self.register_buffer(f'v_{layer}',torch.ones(2))
-        self.register_buffer('updates',torch.zeros((),dtype=torch.long))
-    def forward(self,p,i,layer,update):
-        if update:
-            from torch.distributed.nn.functional import all_reduce
-            n=p.numel()//p.shape[-1];world=dist.get_world_size() if dist.is_initialized() else 1
-            means=[];vs=[]
-            for x in [p,i]:
-                flat=x.float().reshape(-1,x.shape[-1]);summ=flat.sum(0);sq=(flat*flat).sum()
-                if world>1:summ=all_reduce(summ);sq=all_reduce(sq)
-                mu=summ/(n*world);v=(sq/(n*world)-mu.square().sum()).clamp_min(1e-8)
-                means.append(mu);vs.append(v)
-            vp,vi=vs;mp,mi=means
-            with torch.no_grad():
-                w=1. if self.updates.item()==0 else .05
-                getattr(self,f'mu_p_{layer}').lerp_(mp.detach(),w)
-                getattr(self,f'mu_i_{layer}').lerp_(mi.detach(),w)
-                getattr(self,f'v_{layer}').lerp_(torch.stack(vs).detach(),w)
-                if layer==12:self.updates+=1
-        else:
-            mp=getattr(self,f'mu_p_{layer}');mi=getattr(self,f'mu_i_{layer}')
-            vp,vi=getattr(self,f'v_{layer}')
-        target=(vp+vi)/2
-        gp=torch.sqrt(target/vp.clamp_min(1e-8));gi=torch.sqrt(target/vi.clamp_min(1e-8))
-        return torch.cat([mp+gp*(p.float()-mp),mi+gi*(i.float()-mi)],-1),torch.stack([vp,vi,gp,gi])
-
-class MLPFusion(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.point_norm=nn.LayerNorm(384,elementwise_affine=False)
-        self.image_norm=nn.LayerNorm(768,elementwise_affine=False)
-        self.image_projection=nn.Linear(768,384)
-        self.mlp=nn.Sequential(nn.LayerNorm(768),nn.Linear(768,384),nn.GELU(),nn.Linear(384,384),nn.LayerNorm(384))
-    def forward(self,pair):
-        p=self.point_norm(pair[...,:384])
-        i=self.image_projection(self.image_norm(pair[...,384:]))
-        return self.mlp(torch.cat((p,i),dim=-1))
-
-class LinearProjectionFusion(nn.Module):
-    """Normalize CLS readouts, concatenate, and project with one linear layer."""
-    def __init__(self):
-        super().__init__()
-        self.concat_norm = nn.LayerNorm(1152)
-        self.projection = nn.Linear(1152, 384)
-
-    def forward(self, point, image, layer):
-        point = F.layer_norm(point.float(), (384,))
-        image = image.float()
-        if layer != 12:  # Image L12 already passed the MAE's final LayerNorm in encode.
-            image = F.layer_norm(image, (768,))
-        pair = torch.cat((point, image), dim=-1)
-        return self.projection(self.concat_norm(pair))
-
-
 class System(nn.Module):
-    def __init__(self,point,image,linear_projection=False,disable_pair_balance=False,
-                 normalize_cls_regularizer=False):
-        if linear_projection and (disable_pair_balance or normalize_cls_regularizer):
-            raise ValueError("The linear projection has its own CLS and fusion route")
-        super().__init__();self.point=point;self.image=image
-        self.point_cls=nn.Parameter(torch.randn(1,1,384)*.02)
-        for m in [point,image]:m.requires_grad_(False)
-        for block in point.blocks.blocks[-4:]:block.requires_grad_(True)
-        self.preheads=nn.ModuleDict()
-        self.loss=InBatchContrastiveLoss(.2)
-        self.disable_pair_balance=disable_pair_balance
-        self.normalize_cls_regularizer=normalize_cls_regularizer
-        self.balance=None if linear_projection else PairBalance()
-        self.fusion=LinearProjectionFusion() if linear_projection else MLPFusion()
+    def __init__(self, point, image):
+        super().__init__()
+        self.point = point
+        self.image = image
+        width = point.trans_dim
+        if width != 768 or image.cls_token.shape[-1] != width:
+            raise ValueError('Fusion requires native 768D Point and Image CLS tokens')
+        self.point_cls = nn.Parameter(torch.randn(1, 1, width) * .02)
+        self.point.requires_grad_(False)
+        self.image.requires_grad_(False)
+        for block in point.blocks.blocks[-4:]:
+            block.requires_grad_(True)
+        self.fusion = nn.Sequential(nn.Linear(2 * width, 384), nn.GELU(),
+                                    nn.Linear(384, 384), nn.LayerNorm(384))
         self.fusion.requires_grad_(False)
-        self.point_nna=None;self.nna=None;self.phase='pretrain'
+        self.point_nna = None
+        self.phase = 'pretrain'
+
     def train(self,mode=True):
         super().train(mode)
         # Disabling stochastic depth permits exact gradient recomputation/checkpointing.
@@ -141,12 +82,15 @@ class System(nn.Module):
     def encode(self,inputs,views):
         pt,pp,im,valid=inputs;b=len(pt)
         h=torch.cat([self.point_cls.expand(b,-1,-1),pt],1)
-        pos=torch.cat([torch.zeros(b,1,384,device=pt.device,dtype=pt.dtype),pp],1)
+        pos=torch.cat([pp.new_zeros(b, 1, pt.shape[-1]),pp],1)
         pv={}
         for j,block in enumerate(self.point.blocks.blocks,1):
             if torch.is_grad_enabled():h=checkpoint(block,h+pos,use_reentrant=False)
             else:h=block(h+pos)
-            if j in LAYERS:pv[j]=h[:,0].float().reshape(-1,views,384)
+            if j in LAYERS:
+                cls = h[:, 0].float()
+                cls = self.point.norm(cls) if j == 12 else F.layer_norm(cls, (cls.shape[-1],))
+                pv[j] = cls.reshape(-1, views, cls.shape[-1])
         if im is None:return pv,{}
         h=torch.cat([self.image.cls_token.expand(b,-1,-1),im],1)
         mask=valid[:,None,None,:]
@@ -154,43 +98,33 @@ class System(nn.Module):
         for j,block in enumerate(self.image.blocks,1):
             if torch.is_grad_enabled():h=checkpoint(lambda x,m,bl=block:bl(x,attn_mask=m),h,mask,use_reentrant=False)
             else:h=block(h,attn_mask=mask)
-            if j in LAYERS:iv[j]=h[:,0].float().reshape(-1,views,768)
-        iv[12]=self.image.norm(h)[:,0].float().reshape(-1,views,768)
+            if j in LAYERS:
+                cls = h[:, 0].float()
+                cls = self.image.norm(cls) if j == 12 else F.layer_norm(cls, (cls.shape[-1],))
+                iv[j] = cls.reshape(-1, views, cls.shape[-1])
         return pv,iv
     def forward(self,inputs,ids=None,views=2,loss=True):
         p,i=self.encode(inputs,views)
         if self.phase=='pretrain':
             if not loss:return p,i,{},{}
-            total,parts=self.point_nna([p[l] for l in LAYERS],ids)
-            return total/4,{str(l):v for l,v in zip(LAYERS,parts)},{}
-        if self.phase=='calibration':return p,i,{},{}
-        fused={};stats={}
-        for l in LAYERS:
-            if self.balance is None:
-                fused[l] = self.fusion(p[l], i[l], l)
-            elif self.disable_pair_balance:
-                fused[l] = self.fusion(torch.cat((p[l], i[l]), dim=-1).float())
-            else:
-                pair,st=self.balance(p[l],i[l],l,self.training and loss)
-                fused[l]=self.fusion(pair.float());stats[str(l)]=st
-        if not loss:return p,i,fused,stats
+            total, parts = self.point_nna(p, ids)
+            return total, parts, {}
+        concat = {layer: torch.cat((p[layer], i[layer]), dim=-1) for layer in LAYERS}
+        fused = {layer: self.fusion(z) for layer, z in concat.items()}
+        if not loss:
+            return p, i, fused, concat
         parts={};losses=[]
         for l in LAYERS:
             value, terms=vicreg(fused[l])
             contrastive, extra=filtered_infonce(fused[l],ids,topk=20,temperature=0.2)
-            point_cls, image_cls = p[l], i[l]
-            if self.normalize_cls_regularizer:
-                point_cls = self.fusion.point_norm(point_cls)
-                if l != 12:  # Image L12 is already after the native MAE final norm.
-                    image_cls = self.fusion.image_norm(image_cls)
-            point_reg, point_terms=cls_regularizer(point_cls)
-            image_reg, image_terms=cls_regularizer(image_cls)
+            point_reg, point_terms = cls_regularizer(p[l])
+            image_reg, image_terms = cls_regularizer(i[l])
             losses.append(value+contrastive+point_reg+image_reg)
             terms.update({'point_'+k:v for k,v in point_terms.items()})
             terms.update({'image_'+k:v for k,v in image_terms.items()})
             terms=dict(terms,infonce=contrastive.detach(),**extra)
             for k,v in terms.items():parts[f'{l}/{k}']=v
-        return torch.stack(losses).mean(),parts,stats
+        return torch.stack(losses).mean(), parts, {}
 
 def vicreg(z):
     # Differentiable global-batch gather; pool both views as in the old VICReg implementation.
@@ -209,7 +143,7 @@ def vicreg(z):
     return 25*inv+5*var+0.2*covloss,dict(invariance=inv.detach(),variance=var.detach(),covariance=covloss.detach())
 
 def cls_regularizer(z):
-    # Direct raw CLS supervision, before balancing; each modality has its own 1/20 weights.
+    # Apply the regularizer to the same normalized CLS seen by fusion.
     if dist.is_initialized() and dist.get_world_size()>1:
         from torch.distributed.nn.functional import all_gather
         z=torch.cat(all_gather(z.float()),dim=0)
@@ -255,8 +189,9 @@ def filtered_infonce(z,ids,topk=20,temperature=0.2,debug=False):
 
 def cov_metrics(z):
     x=np.array(z,dtype=np.float64);mu=x.mean(0);x-=mu
-    ev=np.maximum(np.linalg.eigvalsh(x.T@x/(len(x)-1)),0)[::-1];q=ev/max(ev.sum(),1e-30);pos=q>0
-    return dict(effective_rank=float(np.exp(-(q[pos]*np.log(q[pos])).sum())),total_variance=float(ev.sum()),pc95=int(np.searchsorted(np.cumsum(q),.95)+1),mean_norm=float(np.linalg.norm(mu)),instances=len(z))
+    gram = x @ x.T if len(x) < x.shape[1] else x.T @ x
+    ev=np.maximum(np.linalg.eigvalsh(gram/(len(x)-1)),0)[::-1];q=ev/max(ev.sum(),1e-30);pos=q>0
+    return dict(effective_rank=float(np.exp(-(q[pos]*np.log(q[pos])).sum())),total_variance=float(ev.sum()),pc1=float(q[0]),pc95=int(np.searchsorted(np.cumsum(q),.95)+1),mean_norm=float(np.linalg.norm(mu)),instances=len(z))
 
 def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,export=False):
     model.eval();local=indices[rank::world];result={};seen=[]
@@ -264,8 +199,8 @@ def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,exp
         for start in range(0,len(local),8):
             pos=local[start:start+8];rr=[recs[int(j)] for j in pos]
             inp=prepare(rr,points,model.point,grouping,model.image,device,0,False,point_only=model.phase=='pretrain')
-            with torch.autocast('cuda',dtype=torch.bfloat16):p,i,f,st=model(inp,views=1,loss=False)
-            for name,values in [('point',p),('image',i),('fused',f)]:
+            with torch.autocast('cuda',dtype=torch.bfloat16):p,i,f,c=model(inp,views=1,loss=False)
+            for name,values in [('point',p),('image',i),('fused',f),('concat',c)]:
                 for l,x in values.items():result.setdefault(f'{name}_{l}',[]).append(x[:,0].float().cpu().numpy())
             seen.extend(pos)
     packed=dict(ids=seen,features={k:np.concatenate(v) for k,v in result.items()})
@@ -275,13 +210,11 @@ def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,exp
         ix=np.concatenate([v['ids'] for v in gathered]);order=np.argsort(ix)
         feats={k:np.concatenate([v['features'][k] for v in gathered])[order] for k in result}
         metrics={k:cov_metrics(v) for k,v in feats.items()}
-        if phase=='refine' and model.balance is not None and not model.disable_pair_balance:
-            for l in LAYERS:
-                mp=getattr(model.balance,f'mu_p_{l}').cpu().numpy();mi=getattr(model.balance,f'mu_i_{l}').cpu().numpy();vp,vi=getattr(model.balance,f'v_{l}').cpu().numpy();target=(vp+vi)/2
-                p=feats[f'point_{l}'];i=feats[f'image_{l}'];pair=np.concatenate([mp+np.sqrt(target/vp)*(p-mp),mi+np.sqrt(target/vi)*(i-mi)],1)
-                metrics[f'balanced_pair_{l}']=cov_metrics(pair)
-                ap=cov_metrics(pair[:,:384])['total_variance'];ai=cov_metrics(pair[:,384:])['total_variance']
-                metrics[f'balanced_pair_{l}']['point_variance_share']=ap/(ap+ai)
+        if phase == 'refine':
+            for layer in LAYERS:
+                vp = metrics[f'point_{layer}']['total_variance']
+                vi = metrics[f'image_{layer}']['total_variance']
+                metrics[f'concat_{layer}']['point_variance_share'] = vp / (vp + vi) if vp + vi else None
         record=dict(phase=phase,epoch=epoch,time=time.time(),metrics=metrics,probe='fixed canonical input; no augmentation; point sample0 fixed FPS; same IDs every epoch')
         append(ROOT/'epoch_metrics.jsonl',record)
         np.savez(ROOT/f'{phase}_epoch{epoch:02d}_probe.npz',ids=ix[order],**feats)

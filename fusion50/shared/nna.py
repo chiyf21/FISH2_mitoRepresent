@@ -27,7 +27,7 @@ class Head(nn.Module):
         super().__init__()
         from kappamodules.utils.mode_to_ctor import mode_to_norm_ctor
         from kappamodules.init import init_norm_as_noaffine,init_xavier_uniform_zero_bias
-        self.input_dim=384;self.proj_hidden_dim=2048;self.proj_hidden_layers=1
+        self.input_dim=cfg.get('input_dim', 384);self.proj_hidden_dim=2048;self.proj_hidden_layers=1
         self.output_dim=256;self.pred_hidden_dim=4096;self.pred_hidden_layers=0
         self.norm_ctor,self.requires_bias=mode_to_norm_ctor('batchnorm');self.act_ctor=nn.GELU
         self.projector=builders['create_projector'](self);self.predictor=builders['create_predictor'](self)
