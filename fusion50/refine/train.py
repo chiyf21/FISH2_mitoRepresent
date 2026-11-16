@@ -85,8 +85,10 @@ def save_epoch(model,opt,phase,epoch,step,out,rank,world,device,cfg,smoke=False)
  dist.barrier()
 
 def main():
- ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--output',required=True);ap.add_argument('--smoke',action='store_true');ap.add_argument('--resume',action='store_true');ap.add_argument('--budget-seconds',type=float,default=float('inf'));args=ap.parse_args()
+ ap=argparse.ArgumentParser();ap.add_argument('--config',required=True);ap.add_argument('--output',required=True);ap.add_argument('--smoke',action='store_true');ap.add_argument('--resume',action='store_true');ap.add_argument('--init-point-cls',type=Path);ap.add_argument('--budget-seconds',type=float,default=float('inf'));args=ap.parse_args()
  cfg=json.loads(Path(args.config).read_text())
+ if args.resume and args.init_point_cls:
+  ap.error('--resume and --init-point-cls are mutually exclusive')
  obsolete = {'baseline_run', 'linear_projection', 'disable_pair_balance',
              'normalize_cls_regularizer', 'refine_stop_epoch', 'image_mlp'} & cfg.keys()
  if obsolete:
@@ -95,6 +97,14 @@ def main():
  fusion_epochs = cfg.get('fusion_epochs', 0)
  if type(cls_epochs) is not int or type(fusion_epochs) is not int or cls_epochs < 1 or fusion_epochs < 0:
   raise ValueError('Expected point_cls_epochs >= 1 and fusion_epochs >= 0')
+ fusion_stop = cfg.get('fusion_stop_epoch', fusion_epochs)
+ if type(fusion_stop) is not int or not 0 <= fusion_stop <= fusion_epochs or bool(fusion_stop) != bool(fusion_epochs):
+  raise ValueError('fusion_stop_epoch must be between 1 and fusion_epochs when fusion is enabled')
+ if args.init_point_cls:
+  cfg['point_cls_init_checkpoint'] = str(args.init_point_cls.resolve(strict=True))
+ cls_init = cfg.get('point_cls_init_checkpoint')
+ if cls_init and not fusion_epochs:
+  raise ValueError('An existing Point CLS checkpoint requires fusion_epochs > 0')
  rank=int(os.environ['RANK']);local=int(os.environ['LOCAL_RANK']);world=int(os.environ['WORLD_SIZE'])
  out=Path(args.output).resolve()
  torch.cuda.set_device(local);device=torch.device('cuda',local)
@@ -112,7 +122,7 @@ def main():
  resume = torch.load(last, map_location='cpu', mmap=True, weights_only=False) if args.resume else None
  if resume is not None:
   old = resume['config']
-  fixed = ('source_run_id', 'point_run', 'point_checkpoint', 'image_checkpoint', 'point_cls_epochs')
+  fixed = ('source_run_id', 'point_run', 'point_checkpoint', 'image_checkpoint', 'point_cls_epochs', 'point_cls_init_checkpoint')
   if (resume['world_size'] != world or any(old.get(key) != cfg.get(key) for key in fixed)
       or (resume['stage'] == 'refine' and old.get('fusion_epochs', 0) != fusion_epochs)):
    raise ValueError('Resume requires the same inputs, stage schedule and number of ranks')
@@ -121,11 +131,24 @@ def main():
   write(out/'monitor_ids.json',probe)
   write(out/'config.resolved.json',cfg)
   (out/'complete.json').unlink(missing_ok=True)
-  write(out/'status.json',dict(status='initializing',phase=resume['stage'] if resume else 'pretrain',epoch=0))
+  write(out/'status.json',dict(status='initializing',phase=resume['stage'] if resume else ('refine' if cls_init else 'pretrain'),epoch=0))
  points=load_points(cfg,recs)
  point,grouping,image=load_models(cfg,device)
  model=core.System(point,image).to(device)
- if resume is None:
+ init_step = 0
+ if cls_init and resume is None:
+  init = torch.load(cls_init, map_location='cpu', mmap=True, weights_only=False)
+  if (init['stage'], init['epoch'], init['world_size']) != ('pretrain', cls_epochs, world):
+   raise ValueError('Expected the final Point-only NNA checkpoint with the same rank count')
+  inputs = ('source_run_id', 'point_run', 'point_checkpoint', 'image_checkpoint')
+  if any(init['config'].get(k) != cfg.get(k) for k in inputs):
+   raise ValueError('Point CLS initialization uses different training inputs')
+  state = {name: tensor for name, tensor in init['model'].items() if not name.startswith('point_nna.')}
+  model.load_state_dict(state, strict=True)
+  init_step = init['step']
+  restore(init['rng_per_rank'][rank],device)
+  del init, state
+ elif resume is None:
   with torch.no_grad():
    mean,std,_=base.estimate_point_cls_stats(point,grouping,[recs[j] for j in tr],points,device,64)
    model.point_cls.copy_(mean[None,None]+.01*std[None,None]*torch.randn_like(model.point_cls))
@@ -133,11 +156,13 @@ def main():
   raise ValueError('Fusion50 requires a global batch of 64 and at least two instances per rank')
  sampler=DistributedSampler(tr,num_replicas=world,rank=rank,shuffle=True,seed=seed,drop_last=True)
  loader=DataLoader(tr,batch_size=64//world,sampler=sampler,drop_last=False,num_workers=0)
- step=0 if resume is None else resume['step'];start_time=time.monotonic();deadline=start_time+args.budget_seconds
- phases=[('pretrain', cls_epochs), ('refine', fusion_epochs)]
+ step=init_step if resume is None else resume['step'];start_time=time.monotonic();deadline=start_time+args.budget_seconds
+ phases = []
+ if not cls_init and (resume is None or resume['stage'] != 'refine'):
+  phases.append(('pretrain', cls_epochs))
+ if fusion_epochs:
+  phases.append(('refine', fusion_epochs))
  for phase,epochs in phases:
-  if not epochs:continue
-  if resume is not None and resume['stage']=='refine' and phase=='pretrain':continue
   continuing=resume is not None and resume['stage']==phase
   if phase=='pretrain':
    model.point_nna=Supervision(ROOT.parent/'vendor/mim_refiner',
@@ -157,7 +182,7 @@ def main():
   if not continuing:
    model.eval();core.monitor(model,recs,probe,points,grouping,device,rank,world,0,phase);save_epoch(model,opt,phase,0,step,out,rank,world,device,cfg,args.smoke)
   first=resume['epoch']+1 if continuing else 1;last_epoch_seconds=0.
-  final_epoch=epochs
+  final_epoch=fusion_stop if phase == 'refine' else epochs
   for epoch in range(first,final_epoch+1):
    stop=(out/'STOP_AFTER_EPOCH').exists() or time.monotonic()+max(last_epoch_seconds,60)+120>deadline
    flag=torch.tensor(int(stop),device=device);dist.all_reduce(flag,op=dist.ReduceOp.MAX)

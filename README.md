@@ -36,8 +36,11 @@ CUDA_VISIBLE_DEVICES=2,3,4,5 torchrun --standalone --nproc_per_node=4 \
 The defaults represent the historical 100-epoch Point-MAE and 120-epoch image checkpoint. Choose an image epoch budget using measured throughput if needed. FOCUS3D batch size is per GPU. Point-MAE batch size is global. A previously prepared FOCUS3D block manifest can also be passed directly to `--data_path`; use its actual axis order.
 
 Copy `fusion50/refine/config.example.json` to `$RUN/refine.json` and set the point-run directory and both MAE checkpoint paths. Set source_run_id to the recorded source for a legacy manifest lacking this field.
-The example stops after 20 Point-only NNA epochs. To start fusion, set fusion_epochs
-and rerun with --resume, the same output directory and the same number of ranks.
+The example stops after 20 Point-only NNA epochs. To start fusion in a new output
+directory, set fusion_epochs to the cosine schedule length (historically 50),
+set fusion_stop_epoch to the desired initial stop, and pass
+--init-point-cls with the final Point-only checkpoint. To resume that fusion
+job, use its resolved config, the same rank count and --resume.
 The trainer uses global batch 64 and the original Point body split.
 
 ```sh
