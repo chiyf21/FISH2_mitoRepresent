@@ -79,7 +79,7 @@ class System(nn.Module):
         # Disabling stochastic depth permits exact gradient recomputation/checkpointing.
         self.point.eval();self.image.eval()
         return self
-    def encode(self,inputs,views):
+    def encode(self, inputs, views, *, normalize_point_cls=True):
         pt,pp,im,valid=inputs;b=len(pt)
         h=torch.cat([self.point_cls.expand(b,-1,-1),pt],1)
         pos=torch.cat([pp.new_zeros(b, 1, pt.shape[-1]),pp],1)
@@ -89,7 +89,8 @@ class System(nn.Module):
             else:h=block(h+pos)
             if j in LAYERS:
                 cls = h[:, 0].float()
-                cls = self.point.norm(cls) if j == 12 else F.layer_norm(cls, (cls.shape[-1],))
+                if normalize_point_cls:
+                    cls = self.point.norm(cls) if j == 12 else F.layer_norm(cls, (cls.shape[-1],))
                 pv[j] = cls.reshape(-1, views, cls.shape[-1])
         if im is None:return pv,{}
         h=torch.cat([self.image.cls_token.expand(b,-1,-1),im],1)
@@ -104,7 +105,9 @@ class System(nn.Module):
                 iv[j] = cls.reshape(-1, views, cls.shape[-1])
         return pv,iv
     def forward(self,inputs,ids=None,views=2,loss=True):
-        p,i=self.encode(inputs,views)
+        # Match legacy NNA supervision while keeping normalized downstream readouts.
+        raw_nna = self.phase == 'pretrain' and loss
+        p, i = self.encode(inputs, views, normalize_point_cls=not raw_nna)
         if self.phase=='pretrain':
             if not loss:return p,i,{},{}
             total, parts = self.point_nna(p, ids)

@@ -6,8 +6,8 @@ This branch implements native 768D Point and Image CLS readouts. Historical
 Block 9-11 use parameter-free LayerNorm on the exported CLS. Block 12 takes the
 native final LayerNorm output. Fusion directly concatenates both 768D CLS without
 a modality projection, PairBalance, or input LayerNorm. The Project384 head retains
-its output LayerNorm. Point-only NNA is unchanged apart from its normalized
-768D input. Fusion uses VICReg and filtered InfoNCE on Project384, plus variance
+its output LayerNorm. Point-only NNA consumes raw 768D block CLS, as in the historical objective.
+Monitoring and fusion use the normalized CLS readouts. Fusion uses VICReg and filtered InfoNCE on Project384, plus variance
 and covariance regularizers on the normalized per-modality CLS.
 
 ## Run
