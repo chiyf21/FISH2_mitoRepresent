@@ -36,7 +36,17 @@ class Trainer:
     def __init__(self,cfg):
         self.cfg=cfg;self.out=Path(cfg['output']);self.device=torch.device(cfg['device']);torch.set_num_threads(cfg.get('cpu_threads',2));seed(cfg['seed'])
         self.rows=load_rows(self.out/'data/manifest.tsv');self.points=np.load(self.out/'data/pointclouds.npy',mmap_mode='r');self.split=json.loads((self.out/'split.json').read_text())
-        settings=dict(num_group=64,group_size=32,mask_ratio=cfg['mae']['mask_ratio'],trans_dim=384,encoder_dims=384,depth=12,heads=6,decoder_depth=4,decoder_heads=6,drop_path=.1)
+        c = cfg['mae']
+        width = c.get('trans_dim', 384)
+        heads = c.get('heads', 6)
+        decoder_heads = c.get('decoder_heads', 6)
+        if any(type(value) is not int or value <= 0 for value in (width, heads, decoder_heads)):
+            raise ValueError('Model width and head counts must be positive integers')
+        if width % heads or width % decoder_heads:
+            raise ValueError('Token width must be divisible by both attention head counts')
+        settings = dict(num_group=64, group_size=32, mask_ratio=c['mask_ratio'],
+                        trans_dim=width, encoder_dims=width, depth=12, heads=heads,
+                        decoder_depth=4, decoder_heads=decoder_heads, drop_path=.1)
         self.mae=adapter.build_model(Path(cfg['point_mae_repo']),SimpleNamespace(**settings),self.device)
         self.step=0;self.amp=cfg.get('amp',True) and self.device.type=='cuda' and torch.cuda.is_bf16_supported()
     def autocast(self):return torch.autocast('cuda',dtype=torch.bfloat16) if self.amp else contextlib.nullcontext()
