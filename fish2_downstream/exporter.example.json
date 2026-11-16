@@ -1,0 +1,17 @@
+{
+  "schema": "fish2.exporter.v1",
+  "note": "TEMPLATE: replace cwd and argv with the exact frozen exporter of this checkpoint architecture. Not an executable registered encoder preset.",
+  "cwd": "/absolute/path/to/the/model-worktree",
+  "argv": [
+    "/home/cyf/miniconda3/envs/cellmap_organelle/bin/python",
+    "/absolute/path/to/the/matched_frozen_exporter.py",
+    "--checkpoint",
+    "{checkpoint}",
+    "--output",
+    "{export_dir}"
+  ],
+  "matrix": "balanced_pair_12.npy",
+  "instance_map": "instance_map.csv",
+  "representation": "YOUR_MODEL_L12_balanced_CLS",
+  "dimension": 1152
+}
