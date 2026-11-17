@@ -71,16 +71,15 @@ def main():
                 mask=np.load(src['mask_path'],mmap_mode='r',allow_pickle=False)>0
                 surface=mask & ~binary_erosion(mask,structure=generate_binary_structure(3,1))
                 xyz=np.argwhere(surface)[:,::-1].astype(np.float32)
-                xyz*=np.asarray(src.get('voxel_size_nm_xyz',spacing),dtype=np.float32)[None,:]
                 if len(xyz)<2:raise ValueError(f"Degenerate point surface: {src['record_id']}")
-                xyz-=xyz.mean(0,keepdims=True);radius=float(np.linalg.norm(xyz,axis=1).max())
-                if radius<=0:raise ValueError(f"Invalid point radius: {src['record_id']}")
-                xyz/=radius
+                xyz-=xyz.mean(0,keepdims=True);radius_vox=float(np.linalg.norm(xyz,axis=1).max())
+                if radius_vox<=0:raise ValueError(f"Invalid point radius: {src['record_id']}")
+                xyz/=radius_vox
                 for view in range(2):
                     sample=rng.choice(len(xyz),size=2048,replace=len(xyz)<2048)
                     pointdata[j,view]=xyz[sample]
-                q=dict(src,point_row=j,normalization_radius_voxels=radius,
-                       spacing_xyz_nm=spacing,key=['reviewed81',src['body_id'],src['record_id']],split='test')
+                q=dict(src,point_row=j,normalization_radius_voxels=radius_vox,
+                       spacing_xyz_nm=src.get('voxel_size_nm_xyz',spacing),key=[a.dataset,src['body_id'],src['record_id']],split='test')
                 point_sources.append('surface_reconstructed_from_reviewed_mask')
             rows.append(q)
     out=a.output.resolve()
