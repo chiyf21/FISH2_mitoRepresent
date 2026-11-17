@@ -45,7 +45,8 @@ def evaluate_readout(vectors, specs, out):
     for name, frame, config in specs:
         log_name = directory/name
         print(directory.name,name,flush=True)
-        scores, instances, groups, training = evaluate(vectors[frame.embedding_row],frame,config,'lr',2)
+        features = np.asarray(vectors[frame.embedding_row], dtype=np.float64)
+        scores, instances, groups, training = evaluate(features,frame,config,'lr',2)
         instances.to_csv(log_name.with_suffix('.instance_oof.csv'),index=False)
         groups.to_csv(log_name.with_suffix('.group_oof.csv'),index=False)
         write_json(log_name.with_suffix('.metrics.json'), scores)
