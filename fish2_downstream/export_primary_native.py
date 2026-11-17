@@ -38,8 +38,10 @@ def prepare(panel, reference, checkpoint, out, workers):
             raise ValueError(f'Dataset file changed: {name}')
     frame = pd.read_csv(panel / 'instances.csv', dtype={'body_id': str})
     assert len(frame) == manifest['instance_count'] and frame.record_id.is_unique
-    assert frame.groupby('cell_type').body_id.nunique().eq(15).all()
-    assert frame.body_id.nunique() == 150
+    if 'neurons_per_cell_type' in manifest:
+        expected = manifest['neurons_per_cell_type']
+        assert frame.groupby('cell_type').body_id.nunique().eq(expected).all()
+    assert frame.body_id.nunique() == manifest['neuron_count']
     assert frame.voxel_size_xyz_nm.eq('8,8,30').all() and frame.array_axis_order.eq('ZYX').all()
     cohort = read_json(reference / 'cohort.json')
     cached = {r['key'][2]: r for r in cohort}
