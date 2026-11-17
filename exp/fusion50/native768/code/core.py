@@ -166,6 +166,16 @@ class System(nn.Module):
         if not loss:
             return p, i, fused, concat
         parts={};losses=[]
+        if self.phase == 'unimodal_image':
+            for l in LAYERS:
+                value, terms=vicreg(i[l])
+                contrastive, extra=filtered_infonce(i[l],ids,topk=20,temperature=0.2)
+                losses.append(value+contrastive)
+                terms=dict(terms,infonce=contrastive.detach(),**extra)
+                for k,v in terms.items(): parts[f'{l}/{k}']=v
+            return torch.stack(losses).mean(),parts,stats
+        # Joint: per-modality CLS regularizers on normalized CLS before fusion;
+        # VICReg and filtered InfoNCE on fused output after the MLP.
         for l in LAYERS:
             value, terms=vicreg(fused[l])
             contrastive, extra=filtered_infonce(fused[l],ids,topk=20,temperature=0.2)

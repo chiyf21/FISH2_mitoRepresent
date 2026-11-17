@@ -1,0 +1,7 @@
+{
+ "source_run_id":"e16_legacy_repair_reinfer_20261105",
+ "point_run":"/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/mito_e16_pointmae768_100ep_20261116_01",
+ "point_checkpoint":"/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/mito_e16_pointmae768_100ep_20261116_01/mae/best.pt",
+ "image_checkpoint":"/mnt/ddf22602-0d4f-4bca-aecb-6484c45f5811/cyf/EM/point-MAE/runs/mito_newmae_vicreg_reg02_cls005_20261105_01/initial_weights/image_mae_checkpoint119.pth",
+ "single_epochs":50,"global_batch":64,"pair_balance":false,"seed":20261029
+}
