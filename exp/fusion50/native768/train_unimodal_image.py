@@ -59,7 +59,7 @@ def main():
    opt.step();steps+=1;total+=float(loss.detach())*len(rr);count+=len(rr)
    if rank==0:pipe.append(out/'step_metrics.jsonl',dict(epoch=epoch,batch=batch,step=steps,loss=float(loss.detach()),parts={k:float(v) for k,v in parts.items()},grad_norm=float(grad),time=time.time()))
   agg=torch.tensor([total,count],dtype=torch.float64,device=dev);dist.all_reduce(agg);mean=float(agg[0]/agg[1])
-  core.monitor(model,rows,probe,points,group,image,dev,rank,world,epoch,phase)
+  core.monitor(model,rows,probe,points,group,dev,rank,world,epoch,phase)
   if rank==0:
    prefix='point.' if modality=='point' else 'image.';clskey='point_cls' if modality=='point' else 'image.cls_token'
    learned={k:v.detach().cpu() for k,v in model.state_dict().items() if k==clskey or any(k.startswith(prefix+f'blocks.{i}.') for i in (8,9,10,11))}
