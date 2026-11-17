@@ -22,7 +22,7 @@ def dataset_rows(name):
             for mf in sorted((nf.parent/'instances').glob('instance_*/metadata.json')):
                 md=json.loads(mf.read_text()); folder=mf.parent
                 rows.append(dict(cohort_index=len(rows),record_id=f"flyem_lc21_source_instances_20261110__{body}__{int(md['global_instance']):06d}",
-                    body_id=body,cell_type=md['cell_type'],voxel_size_nm_xyz=md['voxel_size_nm_xyz'],em_path=str(folder/'em.npy'),mask_path=str(folder/'mask.npy')))
+                    body_id=body,cell_type=neuron['type'],voxel_size_nm_xyz=md['voxel_size_nm_xyz'],em_path=str(folder/'em.npy'),mask_path=str(folder/'mask.npy')))
     if not rows:raise ValueError(f'No rows for dataset {name}')
     for r in rows:
         if not Path(r['em_path']).is_file() or not Path(r['mask_path']).is_file():raise FileNotFoundError(r)
