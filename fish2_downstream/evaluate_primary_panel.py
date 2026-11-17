@@ -100,8 +100,13 @@ def plot_umap(panel,labelled,embeddings,out):
             x=uv[:,0],y=uv[:,1]).to_csv(out/f'UMAP_E50_{key}.csv',index=False)
     write_json(out/'umap_config.json',dict(pca_dimensions=30,umap=args,readouts=meta,
        fit='independent PCA and UMAP per readout; identical inputs and parameters'))
+    plot_overlays(panel, labelled, coords, stages, out)
+
+
+def plot_overlays(panel, labelled, coords, stages, out, compartments_only=False,
+                  compartment_filename='UMAP_E50_compartment.png'):
     labels_by_id = labelled.set_index('record_id').compartment
-    for label in ('cell_type','compartment'):
+    for label in (('compartment',) if compartments_only else ('cell_type','compartment')):
         values = panel.cell_type if label=='cell_type' else panel.record_id.map(labels_by_id)
         classes = sorted(values.dropna().unique())
         fig,axes = plt.subplots(2,2,figsize=(11,8.7),layout='constrained')
@@ -112,7 +117,7 @@ def plot_umap(panel,labelled,embeddings,out):
             uv = coords[key]
             if values.isna().any():
                 keep = values.isna().to_numpy()
-                artist = ax.scatter(*uv[keep].T,c='#c3c9d2',s=2,alpha=.30,linewidths=0,label='No reviewed label')
+                artist = ax.scatter(*uv[keep].T,c='#c3c9d2',s=2,alpha=.30,linewidths=0,label='Outside displayed classes')
                 if key == 'image':
                     handles.append(artist)
             for i,cls in enumerate(classes):
@@ -125,7 +130,8 @@ def plot_umap(panel,labelled,embeddings,out):
             ax.set_aspect('equal',adjustable='datalim')
         fig.legend(handles=handles,loc='outside lower center',ncol=min(5,len(handles)),markerscale=3,
                    frameon=False)
-        fig.savefig(out/f'UMAP_E50_{label}.png',dpi=175,facecolor='white')
+        name = compartment_filename if label=='compartment' else 'UMAP_E50_cell_type.png'
+        fig.savefig(out/name,dpi=175,facecolor='white')
         plt.close(fig)
 
 
