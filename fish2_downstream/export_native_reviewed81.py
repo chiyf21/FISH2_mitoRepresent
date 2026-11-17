@@ -24,8 +24,8 @@ def main():
     from train import core, load_models
 
     checkpoint = torch.load(args.checkpoint, map_location='cpu', mmap=True, weights_only=False)
-    if (checkpoint['stage'], checkpoint['epoch'], checkpoint['step']) != ('refine', 5, 2875):
-        raise ValueError('Expected the matched refine E5 checkpoint')
+    if checkpoint['stage'] != 'refine' or checkpoint['epoch'] < 1:
+        raise ValueError('Expected a completed refinement epoch checkpoint')
     config = checkpoint['config']
     balance = config.get('pair_balance', False)
     point_run = Path(config['point_run'])
