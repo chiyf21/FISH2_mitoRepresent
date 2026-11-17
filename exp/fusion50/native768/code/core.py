@@ -8,8 +8,10 @@ from torch.nn.utils.rnn import pad_sequence
 import base
 LAYERS=(9,10,11,12)
 SEED=20261029
-def prepare(rows,pointdata,point,grouping,image,device,epoch,training,point_only=False):
+def prepare(rows,pointdata,point,grouping,image,device,epoch,training,point_only=False,image_only=False):
     from instance_tokens import patch_counts,spatial_subsample
+    if point_only and image_only:
+        raise ValueError('point_only and image_only are mutually exclusive')
     pts=[];images=[]
     for r in rows:
         for view in range(2 if training else 1):
@@ -27,32 +29,40 @@ def prepare(rows,pointdata,point,grouping,image,device,epoch,training,point_only
                 if not point_only:
                     em=torch.as_tensor(np.array(np.load(r['em_path'],mmap_mode='r'),dtype=np.float32),device=device)
                     mask=torch.as_tensor(np.array(np.load(r['mask_path'],mmap_mode='r'),dtype=np.uint8),device=device)
-                xyz=base.point_xyz(r,pointdata,0,device)
-            with torch.no_grad():
-                with torch.random.fork_rng(devices=[device.index]):
-                    torch.cuda.manual_seed(seed+17);g,c=grouping(xyz)
-                tokens=point.encoder(g);pos=point.pos_embed(c);pts.append((tokens[0],pos[0]))
-                if point_only:continue
-                p=image.patch_embed.patch_size
-                co,_,_=patch_counts(mask.cpu().numpy(),p)
-                if len(co)==0:raise ValueError('empty mask')
-                co=co[spatial_subsample(co,image.max_tokens,(1.,1.,1.),p,seed)]
-                x=(em-em.amin())/(em.amax()-em.amin()+1e-8)
-                dz,dy,dx=[(-n)%q for n,q in zip(x.shape,p)]
-                x=F.pad(x[None,None],(0,dx,0,dy,0,dz),mode='replicate')[0,0]
-                ci=torch.as_tensor(co,device=device,dtype=torch.long)
-                patches=x.unfold(0,p[0],p[0]).unfold(1,p[1],p[1]).unfold(2,p[2],p[2])
-                patches=patches[ci[:,0],ci[:,1],ci[:,2]].reshape(len(co),-1)
-                w=image.patch_embed.proj.weight
-                projected=F.linear(patches,w.reshape(w.shape[0],-1),image.patch_embed.proj.bias)
-                pe=np.concatenate([image._encode_axis(256,co[:,a].astype(np.float32)) for a in range(3)],1)
-                images.append(projected+torch.as_tensor(pe,device=device,dtype=projected.dtype))
+                if not image_only:
+                    xyz=base.point_xyz(r,pointdata,0,device)
+            if not image_only:
+                with torch.no_grad():
+                    with torch.random.fork_rng(devices=[device.index]):
+                        torch.cuda.manual_seed(seed+17);g,c=grouping(xyz)
+                    tokens=point.encoder(g);pos=point.pos_embed(c);pts.append((tokens[0],pos[0]))
+            if point_only:continue
+            p=image.patch_embed.patch_size
+            co,_,_=patch_counts(mask.cpu().numpy(),p)
+            if len(co)==0:raise ValueError('empty mask')
+            co=co[spatial_subsample(co,image.max_tokens,(1.,1.,1.),p,seed)]
+            x=(em-em.amin())/(em.amax()-em.amin()+1e-8)
+            dz,dy,dx=[(-n)%q for n,q in zip(x.shape,p)]
+            x=F.pad(x[None,None],(0,dx,0,dy,0,dz),mode='replicate')[0,0]
+            ci=torch.as_tensor(co,device=device,dtype=torch.long)
+            patches=x.unfold(0,p[0],p[0]).unfold(1,p[1],p[1]).unfold(2,p[2],p[2])
+            patches=patches[ci[:,0],ci[:,1],ci[:,2]].reshape(len(co),-1)
+            w=image.patch_embed.proj.weight
+            projected=F.linear(patches,w.reshape(w.shape[0],-1),image.patch_embed.proj.bias)
+            pe=np.concatenate([image._encode_axis(256,co[:,a].astype(np.float32)) for a in range(3)],1)
+            images.append(projected+torch.as_tensor(pe,device=device,dtype=projected.dtype))
+    if image_only:
+        im=pad_sequence(images,batch_first=True)
+        lengths=torch.tensor([len(t) for t in images],device=im.device)
+        valid=torch.arange(im.shape[1],device=im.device)[None]<lengths[:,None]
+        valid=torch.cat([torch.ones(len(valid),1,device=im.device,dtype=torch.bool),valid],1)
+        return None,None,im,valid
     pt=torch.stack([v[0] for v in pts]);pp=torch.stack([v[1] for v in pts])
     if point_only:return pt,pp,None,None
     im=pad_sequence(images,batch_first=True)
-    lengths=torch.tensor([len(t) for t in images],device=device)
-    valid=torch.arange(im.shape[1],device=device)[None]<lengths[:,None]
-    valid=torch.cat([torch.ones(len(valid),1,device=device,dtype=torch.bool),valid],1)
+    lengths=torch.tensor([len(t) for t in images],device=im.device)
+    valid=torch.arange(im.shape[1],device=im.device)[None]<lengths[:,None]
+    valid=torch.cat([torch.ones(len(valid),1,device=im.device,dtype=torch.bool),valid],1)
     return pt,pp,im,valid
 
 class PairBalance(nn.Module):
@@ -122,29 +132,30 @@ class System(nn.Module):
         self.point.eval();self.image.eval()
         return self
     def encode(self, inputs, views, *, normalize_point_cls=True):
-        pt,pp,im,valid=inputs;b=len(pt)
-        h=torch.cat([self.point_cls.expand(b,-1,-1),pt],1)
-        pos=torch.cat([pp.new_zeros(b, 1, pt.shape[-1]),pp],1)
+        pt,pp,im,valid=inputs
         pv={}
-        for j,block in enumerate(self.point.blocks.blocks,1):
-            if torch.is_grad_enabled():h=checkpoint(block,h+pos,use_reentrant=False)
-            else:h=block(h+pos)
-            if j in LAYERS:
-                cls = h[:, 0].float()
-                if normalize_point_cls:
-                    cls = self.point.norm(cls) if j == 12 else F.layer_norm(cls, (cls.shape[-1],))
-                pv[j] = cls.reshape(-1, views, cls.shape[-1])
+        if pt is not None:
+            b=len(pt)
+            h=torch.cat([self.point_cls.expand(b,-1,-1),pt],1)
+            pos=torch.cat([pp.new_zeros(b,1,pt.shape[-1]),pp],1)
+            for j,block in enumerate(self.point.blocks.blocks,1):
+                if torch.is_grad_enabled():h=checkpoint(block,h+pos,use_reentrant=False)
+                else:h=block(h+pos)
+                if j in LAYERS:
+                    cls=h[:,0].float()
+                    if normalize_point_cls:
+                        cls=self.point.norm(cls) if j==12 else F.layer_norm(cls,(cls.shape[-1],))
+                    pv[j]=cls.reshape(-1,views,cls.shape[-1])
         if im is None:return pv,{}
-        h=torch.cat([self.image.cls_token.expand(b,-1,-1),im],1)
-        mask=valid[:,None,None,:]
-        iv={}
+        b=len(im);h=torch.cat([self.image.cls_token.expand(b,-1,-1),im],1)
+        mask=valid[:,None,None,:];iv={}
         for j,block in enumerate(self.image.blocks,1):
             if torch.is_grad_enabled():h=checkpoint(lambda x,m,bl=block:bl(x,attn_mask=m),h,mask,use_reentrant=False)
             else:h=block(h,attn_mask=mask)
             if j in LAYERS:
-                cls = h[:, 0].float()
-                cls = self.image.norm(cls) if j == 12 else F.layer_norm(cls, (cls.shape[-1],))
-                iv[j] = cls.reshape(-1, views, cls.shape[-1])
+                cls=h[:,0].float()
+                cls=self.image.norm(cls) if j==12 else F.layer_norm(cls,(cls.shape[-1],))
+                iv[j]=cls.reshape(-1,views,cls.shape[-1])
         return pv,iv
     def forward(self,inputs,ids=None,views=2,loss=True):
         # Match legacy NNA supervision while keeping normalized downstream readouts.
@@ -266,7 +277,7 @@ def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,exp
     with torch.inference_mode():
         for start in range(0,len(local),8):
             pos=local[start:start+8];rr=[recs[int(j)] for j in pos]
-            inp=prepare(rr,points,model.point,grouping,model.image,device,0,False,point_only=model.phase in ('pretrain','unimodal_point'))
+            inp=prepare(rr,points,model.point,grouping,model.image,device,0,False,point_only=model.phase in ('pretrain','unimodal_point'),image_only=model.phase=='unimodal_image')
             with torch.autocast('cuda',dtype=torch.bfloat16):p,i,f,c=model(inp,views=1,loss=False)
             for name,values in [('point',p),('image',i),('fused',f),('concat',c)]:
                 for l,x in values.items():result.setdefault(f'{name}_{l}',[]).append(x[:,0].float().cpu().numpy())
