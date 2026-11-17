@@ -18,7 +18,7 @@ def main():
  if 64%world or 64//world<2:raise ValueError('Global batch must be 64')
  torch.cuda.set_device(local);dev=torch.device('cuda',local);dist.init_process_group('nccl',timeout=timedelta(minutes=30));torch.set_num_threads(4)
  seed=cfg.get('seed',20261029);random.seed(seed+rank);np.random.seed(seed+rank);torch.manual_seed(seed+rank)
- out=a.output.resolve();out.mkdir(parents=True,exist_ok=True);(out/'checkpoints').mkdir(exist_ok=True)
+ out=a.output.resolve();out.mkdir(parents=True,exist_ok=True);(out/'checkpoints').mkdir(exist_ok=True);core.ROOT=out
  if (out/'complete.json').exists():raise FileExistsError(out)
  rows=pipe.records(cfg);points=pipe.load_points(cfg,rows);tr=[j for j,r in enumerate(rows) if r['split']=='train'];va=[j for j,r in enumerate(rows) if r['split']=='val']
  if len(rows)<10000:raise ValueError(f'Expected 10k+ instances, got {len(rows)}')
