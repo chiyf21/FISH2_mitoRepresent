@@ -32,7 +32,7 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--config',type=Path,required=True);ap.add_argument('--checkpoint',type=Path,required=True)
     ap.add_argument('--output',type=Path,required=True);ap.add_argument('--dataset',choices=('fish2','lc21'),required=True)
-    ap.add_argument('--modality',choices=('point','image'),required=True);ap.add_argument('--batch-size',type=int,default=2);ap.add_argument('--limit',type=int)
+    ap.add_argument('--modality',choices=('point','image'),required=True);ap.add_argument('--batch-size',type=int,default=2);ap.add_argument('--limit',type=int);ap.add_argument('--offset',type=int,default=0)
     a=ap.parse_args()
     cfg=json.loads(a.config.read_text());ck=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
     phase='unimodal_'+a.modality
@@ -41,9 +41,10 @@ def main():
     torch.cuda.set_device(local);dev=torch.device('cuda',local)
     if world>1:dist.init_process_group('nccl')
     rows=dataset_rows(a.dataset)
-    if a.limit is not None:
-        if a.limit < 1: raise ValueError('--limit must be positive')
-        rows=rows[:a.limit]
+    if a.offset < 0: raise ValueError('--offset cannot be negative')
+    stop=None if a.limit is None else a.offset+a.limit
+    if a.limit is not None and a.limit < 1: raise ValueError('--limit must be positive')
+    rows=rows[a.offset:stop]
     point,group,image=load_models(cfg,dev)
     model=core.System(point,image).to(dev)
     result=model.load_state_dict(ck['model'],strict=False)
