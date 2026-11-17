@@ -31,7 +31,7 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--config',type=Path,required=True);ap.add_argument('--checkpoint',type=Path,required=True)
     ap.add_argument('--output',type=Path,required=True);ap.add_argument('--dataset',choices=('fish2','lc21'),required=True)
-    ap.add_argument('--modality',choices=('point','image'),required=True);ap.add_argument('--batch-size',type=int,default=2)
+    ap.add_argument('--modality',choices=('point','image'),required=True);ap.add_argument('--batch-size',type=int,default=2);ap.add_argument('--limit',type=int)
     a=ap.parse_args()
     if a.modality=='point' and a.dataset!='fish2':raise ValueError('LC21 export currently uses image CLS only')
     cfg=json.loads(a.config.read_text());ck=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
@@ -40,13 +40,17 @@ def main():
     rank=int(os.getenv('RANK','0'));local=int(os.getenv('LOCAL_RANK','0'));world=int(os.getenv('WORLD_SIZE','1'))
     torch.cuda.set_device(local);dev=torch.device('cuda',local)
     if world>1:dist.init_process_group('nccl')
-    rows=dataset_rows(a.dataset);point,group,image=load_models(cfg,dev)
+    rows=dataset_rows(a.dataset)
+    if a.limit is not None:
+        if a.limit < 1: raise ValueError('--limit must be positive')
+        rows=rows[:a.limit]
+    point,group,image=load_models(cfg,dev)
     model=core.System(point,image).to(dev)
     result=model.load_state_dict(ck['model'],strict=False)
     if result.unexpected_keys:raise ValueError(f'Unexpected checkpoint keys: {result.unexpected_keys[:5]}')
-    prefix='point.' if a.modality=='point' else 'image.'
+    prefix='point.blocks.blocks.' if a.modality=='point' else 'image.blocks.'
     clskey='point_cls' if a.modality=='point' else 'image.cls_token'
-    if clskey not in ck['model'] or not any(k.startswith(prefix+'blocks.8.') for k in ck['model']):
+    if clskey not in ck['model'] or not any(k.startswith(prefix+'8.') for k in ck['model']):
         raise ValueError('Checkpoint lacks trained CLS or block-9 weights')
     model.phase=phase;model.eval()
     pointdata=None

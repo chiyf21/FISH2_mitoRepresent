@@ -61,8 +61,8 @@ def main():
   agg=torch.tensor([total,count],dtype=torch.float64,device=dev);dist.all_reduce(agg);mean=float(agg[0]/agg[1])
   core.monitor(model,rows,probe,points,group,dev,rank,world,epoch,phase)
   if rank==0:
-   prefix='point.' if modality=='point' else 'image.';clskey='point_cls' if modality=='point' else 'image.cls_token'
-   learned={k:v.detach().cpu() for k,v in model.state_dict().items() if k==clskey or any(k.startswith(prefix+f'blocks.{i}.') for i in (8,9,10,11))}
+   prefix='point.blocks.blocks.' if modality=='point' else 'image.blocks.';clskey='point_cls' if modality=='point' else 'image.cls_token'
+   learned={k:v.detach().cpu() for k,v in model.state_dict().items() if k==clskey or any(k.startswith(prefix+f'{i}.') for i in (8,9,10,11))}
    ck=dict(stage=phase,epoch=epoch,step=steps,config=cfg,model=learned,mean_loss=mean)
    for name in ('last','best'):
     if name=='best' and mean>=best:continue
