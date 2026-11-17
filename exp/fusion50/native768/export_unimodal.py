@@ -120,7 +120,7 @@ def main():
                 w=csv.writer(f);w.writerow(['record_id','point_input_source'])
                 for r,source in zip(rows,point_sources):w.writerow([r['record_id'],source])
         if len(np.unique(index))!=len(rows) or len(index)!=len(rows):raise ValueError('Incomplete or duplicate embedding row export')
-        print(json.dumps(dict(dataset=a.dataset,modality=a.modality,instances=len(rows),shape=list(full.shape),matrix=str(out/matrix_name),output=str(out)),flush=True))
+        print(json.dumps(dict(dataset=a.dataset,modality=a.modality,instances=len(rows),shape=list(full.shape),matrix=str(out/matrix_name),output=str(out))),flush=True)
     if world>1:dist.barrier();dist.destroy_process_group()
 
 if __name__=='__main__':main()
