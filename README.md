@@ -48,3 +48,7 @@ CUDA_VISIBLE_DEVICES=2 python fusion50/refine/export.py \
 ```
 
 Export creates `fused_12.npy` and `instance_map.csv` in the same row order. Input data, run outputs and weights stay outside the checkout. Load only trusted checkpoints. [Source provenance](SOURCE_MAP.md).
+
+## Experiment records
+
+See [Fusion50 experiments](exp/fusion50/README.md) for the native 768D pipeline, matched controls, and historical checkpoint revisions.
