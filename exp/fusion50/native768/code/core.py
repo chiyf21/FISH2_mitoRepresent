@@ -154,6 +154,20 @@ class System(nn.Module):
             if not loss:return p,i,{},{}
             total, parts = self.point_nna(p, ids)
             return total, parts, {}
+        if self.phase in ('unimodal_point','unimodal_image'):
+            if not loss:
+                return p, i, {}, {}
+            target = p if self.phase == 'unimodal_point' else i
+            parts = {}; losses = []
+            for layer in LAYERS:
+                value, terms = vicreg(target[layer])
+                contrastive, extra = filtered_infonce(
+                    target[layer], ids, topk=20, temperature=0.2)
+                losses.append(value + contrastive)
+                terms = dict(terms, infonce=contrastive.detach(), **extra)
+                for key, val in terms.items():
+                    parts[f'{layer}/{key}'] = val
+            return torch.stack(losses).mean(), parts, {}
         stats = {}
         if self.balance is None:
             concat = {layer: torch.cat((p[layer], i[layer]), dim=-1) for layer in LAYERS}
@@ -166,14 +180,6 @@ class System(nn.Module):
         if not loss:
             return p, i, fused, concat
         parts={};losses=[]
-        if self.phase == 'unimodal_image':
-            for l in LAYERS:
-                value, terms=vicreg(i[l])
-                contrastive, extra=filtered_infonce(i[l],ids,topk=20,temperature=0.2)
-                losses.append(value+contrastive)
-                terms=dict(terms,infonce=contrastive.detach(),**extra)
-                for k,v in terms.items(): parts[f'{l}/{k}']=v
-            return torch.stack(losses).mean(),parts,stats
         # Joint: per-modality CLS regularizers on normalized CLS before fusion;
         # VICReg and filtered InfoNCE on fused output after the MLP.
         for l in LAYERS:
@@ -260,7 +266,7 @@ def monitor(model,recs,indices,points,grouping,device,rank,world,epoch,phase,exp
     with torch.inference_mode():
         for start in range(0,len(local),8):
             pos=local[start:start+8];rr=[recs[int(j)] for j in pos]
-            inp=prepare(rr,points,model.point,grouping,model.image,device,0,False,point_only=model.phase=='pretrain')
+            inp=prepare(rr,points,model.point,grouping,model.image,device,0,False,point_only=model.phase in ('pretrain','unimodal_point'))
             with torch.autocast('cuda',dtype=torch.bfloat16):p,i,f,c=model(inp,views=1,loss=False)
             for name,values in [('point',p),('image',i),('fused',f),('concat',c)]:
                 for l,x in values.items():result.setdefault(f'{name}_{l}',[]).append(x[:,0].float().cpu().numpy())
