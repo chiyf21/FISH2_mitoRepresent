@@ -5,6 +5,8 @@
 | Original Fusion50 (384D Point CLS + 768D Image CLS) | [Trainer](../../fusion50/refine/train.py), [exporter](../../fusion50/refine/export.py) | 384D fused embedding |
 | Native 768D CLS Fusion50 | [Trainer](native768/train.py), [exporter](native768/export.py) | 768D Point and Image CLS, 1536D concat and 384D projected embedding |
 
+For the Full326 per-view VICReg training recipe, see [Full326 native fusion](native768/FULL326.md).
+
 The two trainers have different checkpoint layouts. Use the exporter that matches the
 checkpoint's model. Both variants share the Point-MAE and image MAE implementations.
 

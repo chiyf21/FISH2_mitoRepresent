@@ -1,0 +1,12 @@
+{
+  "point_run": "/path/to/point-mae-run",
+  "point_checkpoint": "/path/to/point-mae-run/mae/epoch_300.pt",
+  "point_cls_seed": "/path/to/point_cls_seed.npy",
+  "epochs": 20,
+  "seed": 20261118,
+  "lr": 0.0002,
+  "encoder_lr": 0.00001,
+  "global_batch": 512,
+  "jitter": 0.01,
+  "unfreeze_last": 4
+}

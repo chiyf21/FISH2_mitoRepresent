@@ -83,8 +83,12 @@ def main():
   optimizer.step()
   pair=torch.stack([loss.detach().double()*len(local_ids),loss.new_tensor(float(len(local_ids)),dtype=torch.float64)]);dist.all_reduce(pair)
   return float(pair[0]/pair[1]),float(norm),len(local_ids)
+ schedule_epochs=c.get('schedule_epochs',c['epochs'])
  for epoch in range(start,c['epochs']):
-  torch.cuda.synchronize();tick=time.perf_counter();factor=min(1.,(epoch+1)/max(c['warmup_epochs'],1)) if epoch<c['warmup_epochs'] else .01+.99*.5*(1+math.cos(math.pi*(epoch-c['warmup_epochs'])/max(1,c['epochs']-c['warmup_epochs'])))
+  torch.cuda.synchronize();tick=time.perf_counter()
+  schedule_epoch=min(epoch,schedule_epochs-1)
+  warmup=c['warmup_epochs']
+  factor=min(1.,(schedule_epoch+1)/max(warmup,1)) if schedule_epoch<warmup else .01+.99*.5*(1+math.cos(math.pi*(schedule_epoch-warmup)/max(1,schedule_epochs-warmup)))
   for group in optimizer.param_groups:group['lr']=c['lr']*factor
   ddp.train();batches=[ids for ids in t.batch_ids(epoch,c['batch_size']) if len(ids)>=world];losses=[]
   if not batches:raise ValueError('No complete distributed batch')
