@@ -1,0 +1,27 @@
+{
+  "point_run": "/path/to/point-mae-run",
+  "point_checkpoint": "/path/to/point-mae-run/mae/epoch_300.pt",
+  "image_checkpoint": "/path/to/image_mae_checkpoint119.pth",
+  "point_cls_init_checkpoint": "/path/to/point-cls-run/checkpoints/point_cls_epoch020.pt",
+  "pair_balance": false,
+  "global_batch": 512,
+  "weights": [
+    25,
+    25,
+    1
+  ],
+  "micro": 4,
+  "lr_peak": [
+    0.00001,
+    0.00002
+  ],
+  "schedule_epochs": 30,
+  "seed": 20261118,
+  "negative_bce": {
+    "margin": 0.86,
+    "temperature": 0.2,
+    "weight": 2,
+    "topk": 20
+  },
+  "exclude_train_indices": []
+}
