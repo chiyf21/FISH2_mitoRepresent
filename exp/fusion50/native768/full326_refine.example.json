@@ -12,8 +12,8 @@
   ],
   "micro": 4,
   "lr_peak": [
-    0.00001,
-    0.00002
+    1e-05,
+    2e-05
   ],
   "schedule_epochs": 30,
   "seed": 20261118,
@@ -23,5 +23,5 @@
     "weight": 2,
     "topk": 20
   },
-  "exclude_train_indices": []
+  "max_train_crop_voxels": 200000000
 }

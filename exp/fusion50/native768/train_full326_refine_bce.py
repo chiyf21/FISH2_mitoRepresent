@@ -117,13 +117,22 @@ def main():
     monitor = json.loads((root / "validation_probe_ids.json").read_text())
     if not set(val.ravel()).union(monitor) <= set(split["validation"]):
         raise ValueError("Validation output must use the held-out validation split")
+    train_ids = set(train.tolist())
+    costs = crop_costs(root, rows, train_ids | set(val.ravel().tolist()), rank)
     excluded_train = set(cfg.get("exclude_train_indices", []))
-    if not excluded_train.issubset(set(train.tolist())):
+    if not excluded_train.issubset(train_ids):
         raise ValueError("Crop exclusions must belong to the training split")
+    cap = cfg.get("max_train_crop_voxels")
+    if cap is not None:
+        if type(cap) is not int or cap <= 0:
+            raise ValueError("The training crop voxel limit must be a positive integer")
+        over_limit = {i for i in train_ids if costs[i] > cap}
+        if "exclude_train_indices" in cfg and excluded_train != over_limit:
+            raise ValueError("Saved training exclusions do not match the configured crop limit")
+        excluded_train = over_limit
     steps_per_epoch = (len(train) - len(excluded_train)) // cfg["global_batch"]
     if steps_per_epoch == 0:
         raise ValueError("The filtered training split must contain a complete batch")
-    costs = crop_costs(root, rows, set(train.tolist()) | set(val.ravel().tolist()), rank)
     point, grouping, image = load_models(cfg, device)
     model = core.System(point, image).to(device)
     model.phase = "refine"

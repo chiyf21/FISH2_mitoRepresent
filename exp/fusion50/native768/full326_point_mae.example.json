@@ -1,0 +1,41 @@
+{
+  "input": {
+    "kind": "cache",
+    "path": "/path/to/surface-cache",
+    "cohort": null,
+    "dataset": "fish2_november_full_326_20261117"
+  },
+  "output": "/path/to/point-run",
+  "point_mae_repo": "/path/to/checkout/fusion50/vendor/point_mae",
+  "seed": 20261105,
+  "device": "cuda:0",
+  "amp": true,
+  "cpu_threads": 2,
+  "spacing_xyz_nm": [
+    8,
+    8,
+    30
+  ],
+  "normalization": "unit_sphere",
+  "split": {
+    "val_fraction": 0.1,
+    "test_fraction": 0.1
+  },
+  "mae": {
+    "epochs": 300,
+    "batch_size": 512,
+    "mask_ratio": 0.7,
+    "lr": 0.0005,
+    "weight_decay": 0.05,
+    "warmup_epochs": 10,
+    "grad_clip": 5,
+    "save_every": 5,
+    "jitter_std": 0,
+    "trans_dim": 768,
+    "heads": 12,
+    "decoder_heads": 12,
+    "schedule_epochs": 100
+  },
+  "monitor_instances": 512,
+  "verify_freeze": true
+}

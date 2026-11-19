@@ -13,9 +13,10 @@ Projection (384D), Point CLS and Image CLS are available for separate evaluation
 | Point CLS seed | A shared 768D vector from the mean of the pre-Transformer group content tokens on 256 fixed, training-only instances. Use one canonical point view and omit positional embeddings from the mean. |
 | Point CLS adaptation | Start from Point-MAE E300. Train the shared CLS and Point blocks 9–12 for 20 epochs on two views. VICReg uses per-view statistics and weights 25:25:1. Use a separate projector for each of blocks 9–12. Global batch 512, seed 20261118, encoder LR 1e-5 and CLS/projector LR 2e-4. |
 
-Use [the Point-MAE config template](../../../fusion50/point/config.example.json)
+Use [the Full326 Point-MAE config template](full326_point_mae.example.json)
 with prepared inputs. Run [the distributed trainer](../../../fusion50/point/train_ddp.py)
-with a 100-epoch target. For continuation set `mae.epochs` to 300,
+with `mae.epochs` set to 100 for the first invocation. For continuation restore the
+300-epoch target from the template,
 `mae.schedule_epochs` to 100, and supply the E100 checkpoint with `--checkpoint`.
 Use the same data split and four ranks to preserve the checkpoint's optimizer and
 per-rank RNG state.
@@ -61,10 +62,11 @@ Copy [the Fusion template](full326_refine.example.json) into a separate run
 directory and resolve its paths. Supply the fixed `split.json` with the original
 Point-MAE train and validation IDs plus the fixed `validation_batches`, and
 supply `validation_probe_ids.json` for the validated embedding probe. For the
-matched baseline, populate `exclude_train_indices` with the training indices
-whose raw EM crop arrays contain over 200,000,000 voxels. The mask foreground
-count is a different quantity. The reference run used a fixed exclusion list
-and 41 updates per epoch. The trainer leaves the validation split intact.
+matched baseline, `max_train_crop_voxels` excludes training instances whose raw
+EM crop arrays contain over 200,000,000 voxels. The mask foreground count is
+a different quantity. A saved `exclude_train_indices` list can be supplied to
+verify the exact selection. The reference run excluded eight instances and
+performed 41 updates per epoch. The validation split is unaffected.
 
 Start or resume with the same config and four ranks:
 
